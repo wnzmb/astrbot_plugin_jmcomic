@@ -1,0 +1,35 @@
+name: astrbot_plugin_jmcomic
+display_name: 禁漫天堂下载插件
+short_desc: 禁漫搜索、查详情、下载并发ZIP发到QQ
+desc: |
+  禁漫天堂 QQ 机器人插件，基于 jmcomic 库开发。
+
+  **功能：**
+  - 全站/作者/标签/角色搜索，支持分页和排序
+  - 查看本子详情，可精简内容绕过QQ审核
+  - 下载整本，自动打包 ZIP 直接发到 QQ
+  - 日榜/周榜/月榜排行榜
+  - 我的收藏夹
+  - 随机抽一个本子（可指定关键词）
+
+  **指令：**
+  - `/jms 关键词 [页码] [排序]` 全站搜索
+  - `/jma 作者名 [页码] [排序]` 按作者搜索
+  - `/jmt 标签名 [页码] [排序]` 按标签搜索
+  - `/jmr 角色名 [页码] [排序]` 按角色搜索
+  - `/jmv <id> [选项]` 查详情
+  - `/jm <id>` 下载并发ZIP
+  - `/jmrank day/week/month` 排行榜
+  - `/jmfav` 我的收藏夹
+  - `/jmrand [关键词]` 随机抽一个
+  - `/jm help` 查看帮助
+version: 0.4.0
+author: wnzmb
+repo: https://github.com/wnzmb/astrbot_plugin_jmcomic
+astrbot_version: ">=4.28.0"
+support_platforms:
+  - qq_official
+tags:
+  - 娱乐
+  - 下载
+  - 工具
