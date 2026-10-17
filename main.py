@@ -1,7 +1,10 @@
 import os
 import asyncio
 import zipfile
+import shutil
 import math
+import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +23,13 @@ class JmComicPlugin(Star):
         super().__init__(context)
         self.config = config or {}
 
-        # 路径配置
-        self.plugin_dir = Path(os.path.dirname(__file__))
-        self.download_base_dir = self.plugin_dir / "downloads"
-        self.zip_base_dir = self.plugin_dir / "zips"
+        # 路径配置：放到 plugin_data 下，插件更新不会丢
+        # 插件目录: .../data/plugins/astrbot_plugin_jmcomic/
+        # 往上两级到 data/，再进 plugin_data/astrbot_plugin_jmcomic/
+        plugin_dir = Path(os.path.dirname(__file__))
+        self.data_dir = plugin_dir.parent.parent / "plugin_data" / "astrbot_plugin_jmcomic"
+        self.download_base_dir = self.data_dir / "downloads"
+        self.zip_base_dir = self.data_dir / "zips"
         self.download_base_dir.mkdir(parents=True, exist_ok=True)
         self.zip_base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -93,6 +99,22 @@ class JmComicPlugin(Star):
         }
 
         logger.info(f"JMComic 插件初始化完成 v0.4.0，镜像站: {domain}")
+
+        # 历史记录文件
+        self.history_file = self.data_dir / "history.json"
+        if not self.history_file.exists():
+            self.history_file.write_text("[]", encoding="utf-8")
+
+    def _load_history(self):
+        """加载下载历史"""
+        try:
+            return json.loads(self.history_file.read_text(encoding="utf-8"))
+        except:
+            return []
+
+    def _save_history(self, history):
+        """保存下载历史"""
+        self.history_file.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ========== 工具方法 ==========
 
@@ -265,6 +287,7 @@ class JmComicPlugin(Star):
                 "📊 其他：\n"
                 "  /jmrank day/week/month     排行榜\n"
                 "  /jmfav                      我的收藏夹\n"
+                "  /jmhistory                  下载历史\n"
                 "  /jmrand [关键词]            随机抽一个\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)"
@@ -301,6 +324,21 @@ class JmComicPlugin(Star):
                 Comp.Plain(f"📎 {zip_name}\n"),
                 Comp.File(file=str(zip_path), name=zip_name)
             ])
+
+            # 发送完删除原始图片文件夹，只保留ZIP
+            await asyncio.to_thread(lambda: shutil.rmtree(album_dir, ignore_errors=True))
+            logger.info(f"已清理原始图片目录: {album_dir}")
+
+            # 写入下载历史
+            history = self._load_history()
+            history.insert(0, {
+                "id": album_id,
+                "title": album.name,
+                "time": time.strftime("%Y-%m-%d %H:%M"),
+                "size_mb": round(size_mb, 1)
+            })
+            history = history[:50]  # 最多保留50条
+            self._save_history(history)
 
         except Exception as e:
             logger.error(f"下载失败: {e}", exc_info=True)
@@ -493,11 +531,32 @@ class JmComicPlugin(Star):
             logger.error(f"排行榜获取失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 失败：{e}")
 
+    # ========== /jmhistory 下载历史 ==========
+    @filter.command("jmhistory")
+    async def jm_history(self, event: AstrMessageEvent):
+        """查看下载历史，用法：/jmhistory"""
+        history = self._load_history()
+        if not history:
+            yield event.plain_result("还没有下载记录")
+            return
+
+        results = []
+        for i, item in enumerate(history[:20]):
+            results.append(f"{i+1}. [JM{item['id']}] {item['title'][:30]}  ({item['size_mb']}MB)  {item['time']}")
+
+        reply = "📜 下载历史（最近20条）：\n\n" + "\n".join(results)
+        reply += "\n\n/jm <id> 重新下载"
+        yield event.plain_result(reply)
+
     # ========== /jmfav 收藏夹 ==========
     @filter.command("jmfav")
     async def jm_favorite(self, event: AstrMessageEvent):
-        """查看收藏夹列表，用法：/jmfav"""
-        yield event.plain_result("📂 获取收藏夹列表...")
+        """收藏夹功能：
+        /jmfav → 查看收藏夹文件夹列表
+        /jmfav <文件夹id> → 查看文件夹里的内容
+        /jmfav add <漫画id> → 把漫画加入收藏夹
+        """
+        args = event.message_str.split()
 
         try:
             client = self.option.new_jm_client()
@@ -513,24 +572,55 @@ class JmComicPlugin(Star):
                 pass
 
             if not username:
-                yield event.plain_result("⚠️ 未配置登录账号，无法查看收藏夹")
+                yield event.plain_result("⚠️ 未配置登录账号，无法使用收藏夹功能")
                 return
 
+            # /jmfav add <id> → 加入收藏
+            if len(args) >= 3 and args[1].lower() == "add":
+                album_id = args[2]
+                yield event.plain_result(f"⭐ 正在收藏 JM{album_id} ...")
+                await asyncio.to_thread(client.add_favorite_album, album_id)
+                yield event.plain_result(f"✅ 已收藏 JM{album_id}")
+                return
+
+            # /jmfav <文件夹id> → 查看文件夹内容
+            if len(args) >= 2 and args[1].isdigit():
+                folder_id = args[1]
+                yield event.plain_result(f"📂 获取收藏夹内容...")
+                page = await asyncio.to_thread(client.favorite_folder, 1, username=username, folder_id=folder_id)
+                items = list(page.iter_id_title())
+
+                if not items:
+                    yield event.plain_result("这个文件夹是空的")
+                    return
+
+                results = []
+                for i, (aid, title) in enumerate(items[:10]):
+                    results.append(f"{i+1}. [JM{aid}] {title}")
+
+                reply = f"📂 收藏夹内容（前10条）：\n\n" + "\n".join(results)
+                reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
+                yield event.plain_result(reply)
+                return
+
+            # /jmfav → 文件夹列表
+            yield event.plain_result("📂 获取收藏夹列表...")
             folders = await asyncio.to_thread(client.favorite_folder, 1, username=username)
 
             results = []
             for i, folder in enumerate(folders):
                 name = getattr(folder, 'name', str(folder))
                 count = getattr(folder, 'num', '?')
-                results.append(f"{i+1}. {name}（{count}本）")
+                folder_id = getattr(folder, 'id', i)
+                results.append(f"{i+1}. {name}（{count}本）  /jmfav {folder_id}")
 
             reply = "📂 我的收藏夹：\n\n" + "\n".join(results)
-            reply += "\n\n（后续支持查看收藏夹内容）"
+            reply += "\n\n/jmfav add <id> 收藏本子"
             yield event.plain_result(reply)
 
         except Exception as e:
-            logger.error(f"获取收藏夹失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 获取失败：{e}")
+            logger.error(f"收藏夹操作失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 失败：{e}")
 
     async def terminate(self):
         pass
