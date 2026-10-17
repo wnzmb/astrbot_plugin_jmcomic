@@ -1,6 +1,6 @@
 # AstrBot JMComic 插件
 
-禁漫天堂 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、下载并发 ZIP。
+漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、下载并发 ZIP。
 
 ---
 
@@ -9,8 +9,8 @@
 1. 在 AstrBot 管理面板 → 插件 → 安装插件 → 从链接安装
 2. 填入仓库地址：`https://github.com/wnzmb/astrbot_plugin_jmcomic`
 3. 安装完成后，点击插件齿轮图标，填写配置：
-   - 用户名：你的禁漫账号（可选）
-   - 密码：你的禁漫密码（可选）
+   - 用户名：你的站点账号（可选）
+   - 密码：你的站点密码（可选）
    - 镜像站域名：你能访问的镜像站
 
 ---
@@ -23,11 +23,11 @@
 | `/jma` | `/jma 作者名 [页码] [排序]` | 按作者搜索 |
 | `/jmt` | `/jmt 标签名 [页码] [排序]` | 按标签搜索 |
 | `/jmr` | `/jmr 角色名 [页码] [排序]` | 按角色搜索 |
-| `/jmv` | `/jmv <id> [选项]` | 查本子详情（可精简内容） |
+| `/jmv` | `/jmv <id> [选项]` | 查漫画详情（可精简内容） |
 | `/jm` | `/jm <id>` | 下载整本，自动打包 ZIP 发到 QQ |
 | `/jmrank` | `/jmrank day/week/month [页码]` | 日榜 / 周榜 / 月榜 |
 | `/jmfav` | `/jmfav` | 查看收藏夹列表 |
-| `/jmrand` | `/jmrand [关键词]` | 随机抽一个本子（可指定关键词） |
+| `/jmrand` | `/jmrand [关键词]` | 随机抽一个漫画（可指定关键词） |
 | `/jm help` | `/jm help` | 查看帮助 |
 
 ---
