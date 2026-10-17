@@ -42,6 +42,7 @@ class JmComicPlugin(Star):
         photo_threads = int(self.config.get("photo_threads", 8))
         image_threads = int(self.config.get("image_threads", 20))
         self.per_page = int(self.config.get("per_page", 10))
+        self.allow_group = self.config.get("allow_group", True)
         self.convert_enabled = self.config.get("convert_enabled", True)
         self.convert_title = self.config.get("convert_title", True)
         self.convert_tags = self.config.get("convert_tags", True)
@@ -152,6 +153,15 @@ class JmComicPlugin(Star):
         self.history_file = self.data_dir / "history.json"
         if not self.history_file.exists():
             self.history_file.write_text("{}", encoding="utf-8")
+
+    def _check_permission(self, event: AstrMessageEvent):
+        """检查群聊权限"""
+        if not self.allow_group:
+            # 群聊会有group_id，私聊没有
+            group_id = event.get_group_id()
+            if group_id:
+                return False
+        return True
 
     def _to_simplified(self, text):
         """繁体转简体"""
@@ -285,7 +295,11 @@ class JmComicPlugin(Star):
             results = []
             for i, (aid, item_title, tags) in enumerate(page_items):
                 global_index = (qq_page - 1) * PER_QQ_PAGE + i + 1
-                safe_tags = self._sanitize_tags(tags[:3])  # 最多显示3个标签
+                if self.convert_title:
+                    item_title = self._to_simplified(item_title)
+                if self.convert_tags:
+                    tags = [self._to_simplified(t) for t in tags]
+                safe_tags = self._sanitize_tags(tags[:3])
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{global_index}. [JM{aid}] {item_title}{tag_str}")
 
@@ -323,6 +337,9 @@ class JmComicPlugin(Star):
           -tag     去掉标签
         示例：/jmv 123456 -role -work
         """
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield event.plain_result(
@@ -404,6 +421,9 @@ class JmComicPlugin(Star):
     @filter.command("jm")
     async def jm_download(self, event: AstrMessageEvent):
         """下载漫画并打包ZIP发到QQ，用法：/jm <id> 或 /jm help"""
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
         args = event.message_str.split()
 
         # 不带参数或 help，输出帮助
@@ -431,6 +451,7 @@ class JmComicPlugin(Star):
                 "  /jmrank day/week/month     排行榜\n"
                 "  /jmfav                      我的收藏夹\n"
                 "  /jmhis                      下载历史\n"
+                "    用法：/jmhis clear 清空历史\n"
                 "  /jmdomain                   查看可用域名\n"
                 "  /jmupdate                   查看更新日志\n"
                 "  /jmrand [关键词]            随机抽一个\n"
@@ -584,6 +605,9 @@ class JmComicPlugin(Star):
     @filter.command("jms")
     async def jm_search(self, event: AstrMessageEvent):
         """全站搜索，用法：/jms <关键词> [页码] [排序]"""
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield event.plain_result(
@@ -674,6 +698,9 @@ class JmComicPlugin(Star):
     @filter.command("jmpdf")
     async def jm_download_pdf(self, event: AstrMessageEvent):
         """下载漫画并发PDF，用法：/jmpdf <id>"""
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield event.plain_result("用法：/jmpdf <漫画id>")
@@ -844,6 +871,10 @@ class JmComicPlugin(Star):
             results = []
             for i, (aid, title, tags) in enumerate(page_items):
                 global_index = (qq_page - 1) * PER_QQ_PAGE + i + 1
+                if self.convert_title:
+                    title = self._to_simplified(title)
+                if self.convert_tags:
+                    tags = [self._to_simplified(t) for t in tags]
                 safe_tags = self._sanitize_tags(tags[:3])
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{global_index}. [JM{aid}] {title}{tag_str}")
@@ -990,6 +1021,10 @@ class JmComicPlugin(Star):
 
             results = []
             for i, (aid, title, tags) in enumerate(items[:20]):
+                if self.convert_title:
+                    title = self._to_simplified(title)
+                if self.convert_tags:
+                    tags = [self._to_simplified(t) for t in tags]
                 safe_tags = self._sanitize_tags(tags[:3])
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{i+1}. [JM{aid}] {title}{tag_str}")

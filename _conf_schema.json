@@ -17,7 +17,7 @@
   "allow_group": {
     "type": "bool",
     "default": true,
-    "description": "允许在群聊中使用"
+    "description": "允许在群聊中使用（关闭后仅私聊可用）"
   },
   "photo_threads": {
     "type": "int",

@@ -32,7 +32,7 @@
 | `/jmpdf` | `/jmpdf <id>` | 下载整本，自动生成 PDF 发到 QQ |
 | `/jmrank` | `/jmrank day/week/month [页码]` | 日榜 / 周榜 / 月榜 |
 | `/jmfav` | `/jmfav` / `/jmfav <文件夹id>` | 收藏夹：列表/查看内容 |
-| `/jmhis` | `/jmhis` | 查看下载历史 |
+| `/jmhis` | `/jmhis` / `/jmhis clear` | 查看/清空下载历史 |
 | `/jmdomain` | `/jmdomain` | 查看最新可用镜像站域名 |
 | `/jmupdate` | `/jmupdate` | 查看插件更新日志 |
 | `/jmrand` | `/jmrand [关键词]` | 随机抽一个漫画（可指定关键词） |
