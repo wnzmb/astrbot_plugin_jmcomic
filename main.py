@@ -14,7 +14,7 @@ import jmcomic
 from jmcomic import JmMagicConstants
 
 
-@register("astrbot_plugin_jmcomic", "your_name", "禁漫下载插件（全功能版）", "0.4.0")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.4.0")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -177,7 +177,7 @@ class JmComicPlugin(Star):
 
     # ========== 工具：从消息里提取数字ID ==========
     def _extract_id(self, message_str: str) -> str:
-        """从消息字符串里提取第一个连续数字，作为本子ID"""
+        """从消息字符串里提取第一个连续数字，作为漫画ID"""
         import re
         match = re.search(r'\d+', message_str)
         return match.group() if match else None
@@ -185,7 +185,7 @@ class JmComicPlugin(Star):
     # ========== /jmv 查详情 ==========
     @filter.command("jmv")
     async def jm_view(self, event: AstrMessageEvent):
-        """查看本子详情，用法：/jmv <id> [选项]
+        """查看漫画详情，用法：/jmv <id> [选项]
         选项：
           -author  去掉作者
           -work    去掉原作
@@ -195,7 +195,7 @@ class JmComicPlugin(Star):
         args = event.message_str.split()
         if len(args) < 2:
             yield event.plain_result(
-                "用法：/jmv <本子id> [选项]\n"
+                "用法：/jmv <漫画id> [选项]\n"
                 "选项：-author 去掉作者 | -work 去掉原作 | -role 去掉角色\n"
                 "示例：/jmv 350234 或 /jmv 350234 -role -work"
             )
@@ -241,13 +241,13 @@ class JmComicPlugin(Star):
     # ========== /jm 下载并发ZIP ==========
     @filter.command("jm")
     async def jm_download(self, event: AstrMessageEvent):
-        """下载本子并打包ZIP发到QQ，用法：/jm <id> 或 /jm help"""
+        """下载漫画并打包ZIP发到QQ，用法：/jm <id> 或 /jm help"""
         args = event.message_str.split()
 
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 禁漫天堂插件 帮助\n"
+                "📖 漫画站插件 帮助\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -256,11 +256,11 @@ class JmComicPlugin(Star):
                 "  /jmr 角色名 [页码] [排序]   按角色搜索\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
-                "  /jmv <本子id> [选项]       查详情\n"
+                "  /jmv <漫画id> [选项]       查详情\n"
                 "    选项：-author -work -role 去掉对应字段\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⬇️ 下载：\n"
-                "  /jm <本子id>                下载并发ZIP\n"
+                "  /jm <漫画id>                下载并发ZIP\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📊 其他：\n"
                 "  /jmrank day/week/month     排行榜\n"
@@ -306,10 +306,10 @@ class JmComicPlugin(Star):
             logger.error(f"下载失败: {e}", exc_info=True)
             yield event.plain_result(f"❌ 失败：{e}")
 
-    # ========== /jmrand 随机本子 ==========
+    # ========== /jmrand 随机漫画 ==========
     @filter.command("jmrand")
     async def jm_random(self, event: AstrMessageEvent):
-        """随机抽一个本子，用法：/jmrand [标签名]
+        """随机抽一个漫画，用法：/jmrand [标签名]
         不填标签就从日榜随机，填了就从指定标签里随机
         """
         args = event.message_str.split()
@@ -318,7 +318,7 @@ class JmComicPlugin(Star):
         if tag_name:
             yield event.plain_result(f"🎲 正在从「{tag_name}」标签随机抽一个...")
         else:
-            yield event.plain_result("🎲 正在从日榜随机抽一个本子...")
+            yield event.plain_result("🎲 正在从日榜随机抽一个漫画...")
 
         try:
             import random
