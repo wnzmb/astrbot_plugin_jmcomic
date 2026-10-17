@@ -49,6 +49,7 @@ class JmComicPlugin(Star):
             "client": {
                 "impl": "html",
                 "retry_times": 5,
+                "cache": True,
                 "domain": {
                     "html": custom_domains + ["18comic.vip"]
                 },
@@ -69,6 +70,9 @@ class JmComicPlugin(Star):
                     "image": image_threads,
                     "photo": photo_threads
                 }
+            },
+            "dir_rule": {
+                "normalize_zh": "zh-cn"
             },
             "plugins": {
                 "after_init": []
