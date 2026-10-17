@@ -12,7 +12,7 @@
   "domain": {
     "type": "string",
     "default": "comic18j-guta.site",
-    "description": "禁漫镜像站域名"
+    "description": "禁漫镜像站域名（多个用英文逗号分隔，自动切换可用的）"
   },
   "allow_group": {
     "type": "bool",
@@ -28,5 +28,10 @@
     "type": "int",
     "default": 20,
     "description": "图片下载并发数（1-32）"
+  },
+  "per_page": {
+    "type": "int",
+    "default": 10,
+    "description": "搜索结果每页显示条数（5-20）"
   }
 }
