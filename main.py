@@ -42,6 +42,47 @@ class JmComicPlugin(Star):
         photo_threads = int(self.config.get("photo_threads", 8))
         image_threads = int(self.config.get("image_threads", 20))
         self.per_page = int(self.config.get("per_page", 10))
+        self.convert_enabled = self.config.get("convert_enabled", True)
+        self.convert_title = self.config.get("convert_title", True)
+        self.convert_tags = self.config.get("convert_tags", True)
+        self.convert_author = self.config.get("convert_author", True)
+        self.convert_comment = self.config.get("convert_comment", True)
+        self.sensitive_filter = self.config.get("sensitive_filter", True)
+        self.tease_enabled = self.config.get("tease_enabled", True)
+        self.cache_days = int(self.config.get("cache_days", 7))
+        self.comment_count = int(self.config.get("comment_count", 10))
+        self.history_max = int(self.config.get("history_max", 50))
+
+        # 解析用户自定义敏感词
+        self.custom_sensitive_map = {}
+        custom_sensitive = self.config.get("custom_sensitive", "")
+        for line in custom_sensitive.strip().split("\n"):
+            line = line.strip()
+            if "=" in line:
+                word, pinyin = line.split("=", 1)
+                word = word.strip()
+                pinyin = pinyin.strip()
+                if word and pinyin:
+                    self.custom_sensitive_map[word] = pinyin
+
+        # 解析用户自定义调侃语录
+        self.custom_teases = []
+        custom_teases = self.config.get("custom_teases", "")
+        for line in custom_teases.strip().split("\n"):
+            line = line.strip()
+            if line:
+                self.custom_teases.append(line)
+
+        # 启动时自动清理过期缓存
+        if self.cache_days > 0:
+            import time as _time
+            now = _time.time()
+            for item in self.download_base_dir.iterdir():
+                if item.is_dir() and not item.name.startswith('.'):
+                    mtime = item.stat().st_mtime
+                    if now - mtime > self.cache_days * 86400:
+                        shutil.rmtree(item, ignore_errors=True)
+                        logger.info(f"自动清理过期缓存: {item.name}")
 
         # 动态生成 jmcomic 配置
         option_dict = {
@@ -105,71 +146,61 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.4.0，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.5.0，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
         if not self.history_file.exists():
-            self.history_file.write_text("[]", encoding="utf-8")
+            self.history_file.write_text("{}", encoding="utf-8")
+
+    def _to_simplified(self, text):
+        """繁体转简体"""
+        if not self.convert_enabled or not text:
+            return text
+        try:
+            import zhconv
+            return zhconv.convert(text, 'zh-cn')
+        except:
+            return text
 
     def _load_history(self):
-        """加载下载历史"""
+        """加载下载历史，结构是 {user_id: [历史列表]}"""
         try:
-            return json.loads(self.history_file.read_text(encoding="utf-8"))
+            data = json.loads(self.history_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+            else:
+                return {}
         except:
-            return []
+            return {}
 
-    def _save_history(self, history):
+    def _save_history(self, data):
         """保存下载历史"""
-        self.history_file.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.history_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _get_user_history(self, user_id):
+        data = self._load_history()
+        return data.get(user_id, [])
+
+    def _add_user_history(self, user_id, item):
+        data = self._load_history()
+        if user_id not in data:
+            data[user_id] = []
+        data[user_id].insert(0, item)
+        data[user_id] = data[user_id][:self.history_max]
+        self._save_history(data)
+        return len(data[user_id])
 
     def _sanitize_tags(self, tags):
         """敏感词替换成拼音，避免QQ审核"""
+        if not self.sensitive_filter:
+            return tags
         import re
         from pypinyin import lazy_pinyin
         
-        sensitive_map = {
-            "无码": "wuma",
-            "重口": "zhongkou",
-            "露出": "luchu",
-            "公開": "gongkai",
-            "寝取": "qinqu",
-            "NTR": "ntr",
-            "人妻": "renqi",
-            "人母": "renmu",
-            "触手": "chushou",
-            "催眠": "cuimian",
-            "暗示": "anshi",
-            "调教": "tiaojiao",
-            "凌辱": "lingru",
-            "暴行": "baoxing",
-            "轮奸": "lunjian",
-            "中出": "zhongchu",
-            "内射": "neishe",
-            "颜射": "yanshe",
-            "拘束": "jushu",
-            "緊縛": "jinfu",
-            "拷问": "kaowen",
-            "鬼畜": "guichu",
-            "猿系": "yuanshe",
-            "性処理": "xingchuli",
-            "肉便器": "roupenqi",
-            "巨尻": "jukao",
-            "巨根": "jugen",
-            "失禁": "shijin",
-            "潮吹": "chaosui",
-            "浣肠": "huanchang",
-            "放尿": "fangniao",
-            "肛门": "gangmen",
-            "后庭": "houting",
-            "全裸": "quanluo",
-            "饮精": "yinjing",
-            "喝精": "hejing",
-            "伪娘": "weiniang",
-            "男の娘": "nanno musume",
-            "奴隶": "nuli",
-            "女王": "nvwang",
-        }
+        sensitive_map = {}
+        # 合并用户自定义敏感词
+        sensitive_map.update(self.custom_sensitive_map)
         result = []
         for tag in tags:
             # 先替换已知敏感词
@@ -319,19 +350,30 @@ class JmComicPlugin(Star):
             comment_count = getattr(album, 'comment_count', '?')
 
             lines = [
-                f"📖 {album.name}",
+                f"📖 {self._to_simplified(album.name) if self.convert_title else album.name}",
                 f"🆔 JM{album_id}",
             ]
 
             if '-author' not in options:
-                lines.append(f"✍️ 作者：{', '.join(authors) if authors else '未知'}")
+                author_str = ', '.join(authors) if authors else '未知'
+                if self.convert_author:
+                    author_str = self._to_simplified(author_str)
+                lines.append(f"✍️ 作者：{author_str}")
             if '-work' not in options:
-                lines.append(f"🎬 原作：{', '.join(works) if works else '无'}")
+                work_str = ', '.join(works) if works else '无'
+                if self.convert_title:
+                    work_str = self._to_simplified(work_str)
+                lines.append(f"🎬 原作：{work_str}")
             if '-role' not in options:
-                lines.append(f"👥 角色：{', '.join(actors[:3]) if actors else '无'}")
+                actor_str = ', '.join(actors[:3]) if actors else '无'
+                if self.convert_tags:
+                    actor_str = self._to_simplified(actor_str)
+                lines.append(f"👥 角色：{actor_str}")
 
             if '-tag' not in options:
-                safe_tags = self._sanitize_tags(tags)  # 显示全部标签
+                if self.convert_tags:
+                    tags = [self._to_simplified(t) for t in tags]
+                safe_tags = self._sanitize_tags(tags)
                 if safe_tags:
                     lines.append(f"🏷️ 标签：{', '.join(safe_tags)}")
 
@@ -400,16 +442,20 @@ class JmComicPlugin(Star):
 
         album_id = args[1]
 
-        # 先找有没有已经下载好的ZIP
-        existing_zips = list(self.zip_base_dir.glob(f"JM{album_id}_*.zip"))
-        if existing_zips:
-            zip_path = existing_zips[0]
+        # 先找downloads里有没有已经下载好的漫画
+        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
+        if existing_album_dirs and existing_album_dirs[0].is_dir():
+            album_dir = existing_album_dirs[0]
+            yield event.plain_result(f"📦 找到已下载的文件，直接打包发送...")
+            zip_name = f"{album_dir.name}.zip"
+            zip_path = self.zip_base_dir / zip_name
+            await asyncio.to_thread(self._zip_folder, album_dir, zip_path)
             size_mb = zip_path.stat().st_size / 1024 / 1024
-            yield event.plain_result(f"📦 找到已下载的文件！大小 {size_mb:.1f}MB，直接发送...")
             yield event.chain_result([
-                Comp.Plain(f"📎 {zip_path.name}\n"),
-                Comp.File(file=str(zip_path), name=zip_path.name)
+                Comp.Plain(f"📎 {zip_name}\n"),
+                Comp.File(file=str(zip_path), name=zip_name)
             ])
+            zip_path.unlink(missing_ok=True)
             return
 
         yield event.plain_result(f"⬇️ 开始下载 JM{album_id} ...")
@@ -441,20 +487,42 @@ class JmComicPlugin(Star):
                 Comp.File(file=str(zip_path), name=zip_name)
             ])
 
-            # 发送完删除原始图片文件夹，只保留ZIP
-            await asyncio.to_thread(lambda: shutil.rmtree(album_dir, ignore_errors=True))
-            logger.info(f"已清理原始图片目录: {album_dir}")
+            # 发送完保留downloads里的原图，下次直接打包，不删
+            # 删除zips里的临时zip
+            zip_path.unlink(missing_ok=True)
 
             # 写入下载历史
-            history = self._load_history()
-            history.insert(0, {
+            user_id = event.get_sender_id()
+            total_count = self._add_user_history(user_id, {
                 "id": album_id,
                 "title": album.name,
                 "time": time.strftime("%Y-%m-%d %H:%M"),
                 "size_mb": round(size_mb, 1)
             })
-            history = history[:50]  # 最多保留50条
-            self._save_history(history)
+
+            # 调侃吐槽
+            import random
+            teases = []
+            if total_count == 3:
+                teases = ["兄弟，今天已经下3本了，悠着点"]
+            elif total_count == 5:
+                teases = ["🚨 5本了！再看下去要樯橹灰飞烟灭了", "🚨 提醒：5本了，身体要紧啊兄弟"]
+            elif total_count == 7:
+                teases = ["差不多得了，出去看看太阳吧，别一直盯着屏幕"]
+            elif total_count == 10:
+                teases = ["🚨 警告：10本！你这频率比我上班打卡都勤", "🚨 10本了！再看下去腰都要坐坏了"]
+            elif total_count == 15:
+                teases = ["你这下载量，网站管理员都要注意到你了"]
+            elif total_count == 20:
+                teases = ["🚨 严重警告：20本！JM官方都要给你发终身VIP了", "🚨 20本了！你这是准备把整个网站搬回家？"]
+            elif total_count == 30:
+                teases = ["你这用量，键盘都要被你磨包浆了"]
+            elif total_count == 50:
+                teases = ["🚨 50本了兄弟！建议今天到此为止，明天再看"]
+            # 加上用户自定义语录
+            teases.extend(self.custom_teases)
+            if self.tease_enabled and teases:
+                yield event.plain_result(random.choice(teases))
 
         except Exception as e:
             logger.error(f"下载失败: {e}", exc_info=True)
@@ -612,6 +680,27 @@ class JmComicPlugin(Star):
             return
 
         album_id = args[1]
+
+        # 先找downloads里有没有已经下载好的漫画
+        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
+        if existing_album_dirs and existing_album_dirs[0].is_dir():
+            album_dir = existing_album_dirs[0]
+            image_files = sorted([f for f in album_dir.rglob("*.jpg")] + [f for f in album_dir.rglob("*.png")])
+            if image_files:
+                yield event.plain_result(f"📄 找到已下载的文件，直接生成PDF...")
+                from PIL import Image
+                images = [Image.open(img_path).convert('RGB') for img_path in image_files]
+                pdf_name = f"{album_dir.name}.pdf"
+                pdf_path = self.zip_base_dir / pdf_name
+                images[0].save(pdf_path, save_all=True, append_images=images[1:], resolution=100.0)
+                size_mb = pdf_path.stat().st_size / 1024 / 1024
+                yield event.chain_result([
+                    Comp.Plain(f"📎 {pdf_name}\n"),
+                    Comp.File(file=str(pdf_path), name=pdf_name)
+                ])
+                pdf_path.unlink(missing_ok=True)
+                return
+
         yield event.plain_result(f"⬇️ 开始下载 JM{album_id} 并生成PDF ...")
 
         try:
@@ -660,9 +749,41 @@ class JmComicPlugin(Star):
                 Comp.File(file=str(pdf_path), name=pdf_name)
             ])
 
-            # 清理原始图片和PDF
-            await asyncio.to_thread(lambda: shutil.rmtree(album_dir, ignore_errors=True))
+            # 保留downloads里的原图，下次直接用，删除临时PDF
             pdf_path.unlink(missing_ok=True)
+
+            # 写入下载历史
+            user_id = event.get_sender_id()
+            total_count = self._add_user_history(user_id, {
+                "id": album_id,
+                "title": album.name,
+                "time": time.strftime("%Y-%m-%d %H:%M"),
+                "size_mb": round(size_mb, 1)
+            })
+
+            # 调侃吐槽
+            import random
+            teases = []
+            if total_count == 3:
+                teases = ["兄弟，今天已经下3本了，悠着点"]
+            elif total_count == 5:
+                teases = ["🚨 5本了！再看下去要樯橹灰飞烟灭了", "🚨 提醒：5本了，身体要紧啊兄弟"]
+            elif total_count == 7:
+                teases = ["差不多得了，出去看看太阳吧，别一直盯着屏幕"]
+            elif total_count == 10:
+                teases = ["🚨 警告：10本！你这频率比我上班打卡都勤", "🚨 10本了！再看下去腰都要坐坏了"]
+            elif total_count == 15:
+                teases = ["你这下载量，网站管理员都要注意到你了"]
+            elif total_count == 20:
+                teases = ["🚨 严重警告：20本！JM官方都要给你发终身VIP了", "🚨 20本了！你这是准备把整个网站搬回家？"]
+            elif total_count == 30:
+                teases = ["你这用量，键盘都要被你磨包浆了"]
+            elif total_count == 50:
+                teases = ["🚨 50本了兄弟！建议今天到此为止，明天再看"]
+            # 加上用户自定义语录
+            teases.extend(self.custom_teases)
+            if self.tease_enabled and teases:
+                yield event.plain_result(random.choice(teases))
 
         except Exception as e:
             logger.error(f"PDF下载失败: {e}", exc_info=True)
@@ -738,8 +859,19 @@ class JmComicPlugin(Star):
     # ========== /jmhis 下载历史 ==========
     @filter.command("jmhis")
     async def jm_history(self, event: AstrMessageEvent):
-        """查看下载历史，用法：/jmhis"""
-        history = self._load_history()
+        """查看下载历史，用法：/jmhis 或 /jmhis clear 清空历史"""
+        args = event.message_str.split()
+        user_id = event.get_sender_id()
+
+        if len(args) >= 2 and args[1].lower() == "clear":
+            data = self._load_history()
+            if user_id in data:
+                del data[user_id]
+            self._save_history(data)
+            yield event.plain_result("🧹 你的下载历史已清空")
+            return
+
+        history = self._get_user_history(user_id)
         if not history:
             yield event.plain_result("还没有下载记录")
             return
@@ -749,7 +881,7 @@ class JmComicPlugin(Star):
             results.append(f"{i+1}. [JM{item['id']}] {item['title'][:30]}  ({item['size_mb']}MB)  {item['time']}")
 
         reply = "📜 下载历史（最近20条）：\n\n" + "\n".join(results)
-        reply += "\n\n/jm <id> 重新下载"
+        reply += "\n\n/jmhis clear 清空历史"
         yield event.plain_result(reply)
 
     # ========== /jmc 评论查看 ==========
@@ -774,11 +906,14 @@ class JmComicPlugin(Star):
                 return
 
             results = []
-            for i, comment in enumerate(comments[:10]):
+            for i, comment in enumerate(comments[:self.comment_count]):
                 nickname = getattr(comment, 'nickname', getattr(comment, 'username', '匿名'))
                 content = getattr(comment, 'content', '')
-                # 去掉换行，太长截断
+                # 去掉换行，太长截断，敏感词转拼音
                 content = content.replace('\n', ' ').strip()[:100]
+                if self.convert_comment:
+                    content = self._to_simplified(content)
+                content = self._sanitize_tags([content])[0] if content else ''
                 results.append(f"{i+1}. {nickname}：{content}")
 
             reply = f"💬 JM{album_id} 评论（前10条）：\n\n" + "\n".join(results)

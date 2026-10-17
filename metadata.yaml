@@ -2,34 +2,7 @@ name: astrbot_plugin_jmcomic
 display_name: 漫画下载插件
 short_desc: 漫画搜索、详情、下载，支持ZIP/PDF
 desc: |
-  漫画站 QQ 机器人插件，基于 jmcomic 库开发。
-
-  **功能：**
-  - 全站/作者/标签/角色/原作搜索，支持分页和排序
-  - 查看漫画详情，支持动态精简内容
-  - 下载整本，自动打包 ZIP 或 PDF 发送
-  - 日榜/周榜/月榜排行榜
-  - 我的收藏夹
-  - 随机抽一个（可指定关键词）
-  - 评论查看、域名查询、更新日志
-
-  **指令：**
-  - `/jms 关键词 [页码] [排序]` 全站搜索
-  - `/jma 作者名 [页码] [排序]` 按作者搜索
-  - `/jmt 标签名 [页码] [排序]` 按标签搜索
-  - `/jmr 角色名 [页码] [排序]` 按角色搜索
-  - `/jmw 原作名 [页码] [排序]` 按原作搜索
-  - `/jmv <id> [选项]` 查详情
-  - `/jmc <id>` 看评论
-  - `/jm <id>` 下载并发ZIP
-  - `/jmpdf <id>` 下载并发PDF
-  - `/jmrank day/week/month` 排行榜
-  - `/jmfav` 我的收藏夹
-  - `/jmhis` 下载历史
-  - `/jmdomain` 查可用域名
-  - `/jmupdate` 查看更新日志
-  - `/jmrand [关键词]` 随机抽一个
-  - `/jm help` 查看帮助
+  漫画站 QQ 机器人插件，基于 jmcomic 库开发，支持搜索、详情查看、下载ZIP/PDF、排行榜、随机推荐等功能，所有参数均可在配置页自定义。
 version: 0.5.0
 author: wnzmb
 repo: https://github.com/wnzmb/astrbot_plugin_jmcomic
