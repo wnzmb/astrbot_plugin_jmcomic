@@ -17,7 +17,7 @@ import jmcomic
 from jmcomic import JmMagicConstants
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.4.0")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.0")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -188,13 +188,6 @@ class JmComicPlugin(Star):
             tag = re.sub(r'.交', replace_jiao, tag)
             tag = re.sub(r'.乳', replace_ru, tag)
             
-            result.append(tag)
-        return result
-        result = []
-        for tag in tags:
-            for cn, pinyin in sensitive_map.items():
-                if cn in tag:
-                    tag = tag.replace(cn, pinyin)
             result.append(tag)
         return result
 
