@@ -17,7 +17,7 @@ import jmcomic
 from jmcomic import JmMagicConstants
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.0")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.1")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -481,7 +481,8 @@ class JmComicPlugin(Star):
                 "  /jmupdate                   查看更新日志\n"
                 "  /jmrand [关键词]            随机抽一个\n"
                 "━━━━━━━━━━━━━━━\n"
-                "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)"
+                "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
+                "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果"
             )
             yield event.plain_result(help_text)
             return
