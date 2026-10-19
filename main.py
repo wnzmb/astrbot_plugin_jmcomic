@@ -173,6 +173,16 @@ class JmComicPlugin(Star):
         except:
             return text
 
+    def _to_traditional(self, text):
+        """简体转繁体，用于搜索"""
+        if not text:
+            return text
+        try:
+            import zhconv
+            return zhconv.convert(text, 'zh-tw')
+        except:
+            return text
+
     def _load_history(self):
         """加载下载历史，结构是 {user_id: [历史列表]}"""
         try:
@@ -281,9 +291,24 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"🔍 {title_prefix}{keyword}（{order_name}，第{qq_page}页）...")
 
         try:
-            page = await asyncio.to_thread(search_method, keyword, web_page, order_by)
-
-            all_items = list(page.iter_id_title_tag())
+            # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
+            import zhconv
+            keyword_traditional = zhconv.convert(keyword, 'zh-tw')
+            all_items = []
+            for kw in [keyword, keyword_traditional]:
+                if kw == keyword:
+                    page = await asyncio.to_thread(search_method, kw, web_page, order_by)
+                else:
+                    page = await asyncio.to_thread(search_method, kw, web_page, order_by)
+                all_items.extend(list(page.iter_id_title_tag()))
+            # 去重
+            seen = set()
+            unique_items = []
+            for item in all_items:
+                if item[0] not in seen:
+                    seen.add(item[0])
+                    unique_items.append(item)
+            all_items = unique_items
             start = offset_in_web_page
             end = start + PER_QQ_PAGE
             page_items = all_items[start:end]
