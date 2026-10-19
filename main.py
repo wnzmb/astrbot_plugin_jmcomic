@@ -15,6 +15,50 @@ import astrbot.api.message_components as Comp
 
 import jmcomic
 from jmcomic import JmMagicConstants
+from jmcomic.jm_exception import (
+    MissingAlbumPhotoException,
+    RequestRetryAllFailException,
+    PartialDownloadFailedException,
+)
+# DownloadCancelledException 在 jmcomic 2.7.6+ 才有，低版本兼容处理
+try:
+    from jmcomic.jm_exception import DownloadCancelledException
+except ImportError:
+    DownloadCancelledException = None
+from jmcomic.jm_downloader import JmDownloader
+
+
+class ProgressDownloader(JmDownloader):
+    """带进度跟踪的下载器，进度存在类变量中按 album_id 隔离"""
+    # key: album_id, value: {'total': int, 'done': int, 'finished': bool}
+    _progress = {}
+
+    def before_album(self, album):
+        super().before_album(album)
+        total = 0
+        for photo in album:
+            if photo.page_arr:
+                total += len(photo.page_arr)
+        ProgressDownloader._progress[str(album.album_id)] = {
+            'total': total,
+            'done': 0,
+            'finished': False,
+        }
+
+    def after_image(self, image, img_save_path):
+        super().after_image(image, img_save_path)
+        try:
+            album_id = str(image.from_photo.album_id)
+            if album_id in ProgressDownloader._progress:
+                ProgressDownloader._progress[album_id]['done'] += 1
+        except Exception:
+            pass
+
+    def after_album(self, album):
+        super().after_album(album)
+        aid = str(album.album_id)
+        if aid in ProgressDownloader._progress:
+            ProgressDownloader._progress[aid]['finished'] = True
 
 
 @register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.2")
@@ -55,6 +99,11 @@ class JmComicPlugin(Star):
         self.history_max = int(self.config.get("history_max", 50))
         self.dual_search = self.config.get("dual_search", True)
 
+        # 客户端类型：api（默认，功能全）或 html（支持分类筛选）
+        self.client_type = self.config.get("client_type", "api").lower()
+        if self.client_type not in ("api", "html"):
+            self.client_type = "api"
+
         # 解析用户自定义敏感词
         self.custom_sensitive_map = {}
         custom_sensitive = self.config.get("custom_sensitive", "")
@@ -87,15 +136,32 @@ class JmComicPlugin(Star):
                         logger.info(f"自动清理过期缓存: {item.name}")
 
         # 动态生成 jmcomic 配置
+        # 根据用户配置选择客户端类型：
+        #   api  = API客户端（移动端接口），功能全：收藏添加、评论翻页、签到、用户信息，不支持分类筛选
+        #   html = HTML客户端（网页端接口），支持分类筛选，但收藏添加报错、评论不翻页、总数解析不出
+        if self.client_type == "api":
+            domain_conf = {
+                # API 客户端域名：用户配置的域名 + 内置默认域名作为备选
+                # API 客户端会自动从域名服务器获取最新域名
+                "api": custom_domains + [
+                    "www.cdnhjk.net",
+                    "www.cdngwc.cc",
+                    "www.cdngwc.net",
+                    "www.cdngwc.club",
+                ]
+            }
+        else:
+            domain_conf = {
+                "html": custom_domains + ["18comic.vip"]
+            }
+
         option_dict = {
             "log": False,
             "client": {
-                "impl": "html",
+                "impl": self.client_type,
                 "retry_times": 5,
                 "cache": True,
-                "domain": {
-                    "html": custom_domains + ["18comic.vip"]
-                },
+                "domain": domain_conf,
                 "postman": {
                     "meta_data": {
                         "proxies": None,
@@ -148,7 +214,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.5.0，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.6.0，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -163,6 +229,20 @@ class JmComicPlugin(Star):
             if group_id:
                 return False
         return True
+
+    def _handle_jm_exception(self, e: Exception, action: str = "操作") -> str:
+        """把 jmcomic 异常转换为用户友好的提示"""
+        if isinstance(e, MissingAlbumPhotoException):
+            return f"❌ 查无此本/章节，请检查 ID 是否正确"
+        elif isinstance(e, RequestRetryAllFailException):
+            return f"❌ 网络请求全部失败，可尝试在插件配置中更换域名\n{e}"
+        elif isinstance(e, PartialDownloadFailedException):
+            return f"⚠️ 部分图片下载失败，已发送已完成部分"
+        elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
+            return f"⏹️ 下载已取消"
+        else:
+            logger.error(f"{action}失败: {e}", exc_info=True)
+            return f"❌ {action}失败：{e}"
 
     def _to_simplified(self, text):
         """繁体转简体"""
@@ -255,6 +335,62 @@ class JmComicPlugin(Star):
                     zipf.write(file_fullpath, arcname)
         return zip_path
 
+    async def _download_batch(self, event, id_str):
+        """批量下载：逗号分隔的ID列表"""
+        id_list = [x.strip() for x in id_str.split(',') if x.strip()]
+        if not id_list:
+            yield event.plain_result("❌ 未解析到有效ID")
+            return
+
+        yield event.plain_result(f"📦 批量下载 {len(id_list)} 本：{', '.join(id_list)}")
+
+        try:
+            # jmcomic 原生支持传入可迭代对象进行批量下载
+            result = await jmcomic.download_album_async(id_list, self.option)
+
+            # 逐个打包发送成功的
+            sent_count = 0
+            for item in result:
+                album = item.detail
+                album_dir = Path(album.save_path)
+                if not album_dir.exists():
+                    continue
+
+                zip_name = f"JM{album.album_id}_{album.name[:30]}.zip"
+                for ch in r'\/:*?"<>|':
+                    zip_name = zip_name.replace(ch, '_')
+                zip_path = self.zip_base_dir / zip_name
+
+                await asyncio.to_thread(self._zip_folder, album_dir, zip_path)
+                size_mb = zip_path.stat().st_size / 1024 / 1024
+
+                yield event.plain_result(f"✅ [{sent_count+1}/{len(id_list)}] JM{album.album_id} 下载完成，{size_mb:.1f}MB，发送中...")
+                yield event.chain_result([
+                    Comp.Plain(f"📎 {zip_name}\n"),
+                    Comp.File(file=str(zip_path), name=zip_name)
+                ])
+                zip_path.unlink(missing_ok=True)
+                sent_count += 1
+
+                # 写入历史
+                user_id = event.get_sender_id()
+                self._add_user_history(user_id, {
+                    "id": album.album_id,
+                    "title": album.name,
+                    "time": time.strftime("%Y-%m-%d %H:%M"),
+                    "size_mb": round(size_mb, 1)
+                })
+
+            # 报告失败的
+            if result.failed:
+                failed_ids = list(result.failed.keys())
+                yield event.plain_result(f"⚠️ 以下 {len(failed_ids)} 本下载失败：{', '.join(failed_ids)}")
+
+            yield event.plain_result(f"📊 批量下载完成：成功 {sent_count}/{len(id_list)} 本")
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "批量下载"))
+
     def _parse_search_args(self, args):
         """
         解析搜索参数：关键词 + 可选页码 + 可选排序
@@ -343,8 +479,7 @@ class JmComicPlugin(Star):
             yield event.plain_result(reply)
 
         except Exception as e:
-            logger.error(f"搜索失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 搜索失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "搜索"))
 
     # ========== 工具：从消息里提取数字ID ==========
     def _extract_id(self, message_str: str) -> str:
@@ -362,6 +497,8 @@ class JmComicPlugin(Star):
           -work    去掉原作
           -role    去掉角色
           -tag     去掉标签
+          -desc    去掉简介
+          -related 去掉相关推荐
         示例：/jmv 123456 -role -work
         """
         if not self._check_permission(event):
@@ -392,6 +529,12 @@ class JmComicPlugin(Star):
             tags = getattr(album, 'tags', [])
             page_count = getattr(album, 'page_count', '?')
             comment_count = getattr(album, 'comment_count', '?')
+            description = getattr(album, 'description', '') or ''
+            pub_date = getattr(album, 'pub_date', '') or ''
+            update_date = getattr(album, 'update_date', '') or ''
+            likes = getattr(album, 'likes', '') or ''
+            views = getattr(album, 'views', '') or ''
+            related_list = getattr(album, 'related_list', None) or []
 
             lines = [
                 f"📖 {self._to_simplified(album.name) if self.convert_title else album.name}",
@@ -421,8 +564,48 @@ class JmComicPlugin(Star):
                 if safe_tags:
                     lines.append(f"🏷️ 标签：{', '.join(safe_tags)}")
 
-            lines.append(f"📄 章节：{len(chapters)}章 | 🖼️ 页数：{page_count}页 | 💬 评论：{comment_count}条")
-            lines.append(f"\n发 /jm {album_id} 下载")
+            # 简介
+            if description and '-desc' not in options:
+                desc = self._to_simplified(description) if self.convert_title else description
+                desc = desc.replace('\n', ' ').strip()[:150]
+                if desc:
+                    lines.append(f"📝 简介：{desc}")
+
+            # 统计信息
+            stats = []
+            if likes:
+                stats.append(f"❤️ {likes}")
+            if views:
+                stats.append(f"👁️ {views}")
+            stats.append(f"📄 {page_count}页")
+            stats.append(f"💬 {comment_count}条")
+            if pub_date:
+                stats.append(f"📅 {pub_date}")
+            lines.append(" | ".join(stats))
+
+            # 相关推荐
+            if related_list and '-related' not in options:
+                lines.append("\n🔗 相关推荐：")
+                for i, rel in enumerate(related_list[:5]):
+                    # related_list 可能是 album_id 字符串或 (id, title) 元组
+                    if isinstance(rel, (tuple, list)) and len(rel) >= 2:
+                        rel_id, rel_title = rel[0], rel[1]
+                    else:
+                        rel_id, rel_title = str(rel), str(rel)
+                    rel_title = self._to_simplified(rel_title) if self.convert_title else rel_title
+                    lines.append(f"  {i+1}. [JM{rel_id}] {rel_title[:30]}")
+
+            # 章节列表（最多显示10章，方便获取章节ID用于单章下载）
+            if chapters:
+                lines.append("\n📚 章节列表：")
+                for i, photo in enumerate(chapters[:10]):
+                    photo_title = self._to_simplified(photo.name) if self.convert_title else photo.name
+                    lines.append(f"  {i+1}. [JM{photo.photo_id}] {photo_title[:40]}")
+                if len(chapters) > 10:
+                    lines.append(f"  ... 共{len(chapters)}章，仅显示前10章")
+                lines.append(f"\n💡 /jmphoto <章节id> 下载单章，/jm {album_id} 下载全本")
+            else:
+                lines.append(f"\n发 /jm {album_id} 下载")
 
             reply = "\n".join(lines)
             yield event.plain_result(reply)
@@ -441,8 +624,7 @@ class JmComicPlugin(Star):
                 logger.warning(f"封面下载失败: {e}")
 
         except Exception as e:
-            logger.error(f"查询失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 查询失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "查询"))
 
     # ========== /jm 下载并发ZIP ==========
     @filter.command("jm")
@@ -456,7 +638,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助\n"
+                "📖 漫画站插件 帮助 v0.6.0\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -466,17 +648,27 @@ class JmComicPlugin(Star):
                 "  /jmw 原作名 [页码] [排序]   按原作搜索\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
-                "  /jmv <漫画id> [选项]       查详情\n"
-                "    选项：-author -work -role -tag 去掉对应字段\n"
-                "  /jmc <漫画id>              看评论\n"
+                "  /jmv <漫画id> [选项]       查详情(含章节列表/简介/相关推荐)\n"
+                "    选项：-author -work -role -tag -desc -related\n"
+                "  /jmc <漫画id> [页码]        看评论(支持翻页/回复/剧透标记)\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⬇️ 下载：\n"
-                "  /jm <漫画id>                下载并发ZIP\n"
+                "  /jm <漫画id>                下载并发ZIP(带进度推送)\n"
+                "  /jm id1,id2,id3             批量下载多本\n"
                 "  /jmpdf <漫画id>             下载并发PDF\n"
+                "  /jmphoto <章节id>           下载单个章节\n"
+                "  /jmlong <漫画id>            下载并合并为长图PNG\n"
+                "━━━━━━━━━━━━━━━\n"
+                "⭐ 账号：\n"
+                "  /jmcheckin                  每日签到领金币经验\n"
+                "  /jmme                       用户信息面板\n"
+                "  /jmfav                      收藏夹文件夹列表\n"
+                "  /jmfav <文件夹id>           查看指定收藏夹\n"
+                "  /jmfav add <漫画id>         添加收藏\n"
+                "  /jmfav del <漫画id>         移除收藏\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📊 其他：\n"
                 "  /jmrank day/week/month     排行榜\n"
-                "  /jmfav                      我的收藏夹\n"
                 "  /jmhis                      下载历史\n"
                 "    用法：/jmhis clear 清空历史\n"
                 "  /jmdomain                   查看可用域名\n"
@@ -484,12 +676,20 @@ class JmComicPlugin(Star):
                 "  /jmrand [关键词]            随机抽一个\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
-                "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果"
+                "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
+                "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
+                "📦 需 jmcomic 2.7.6+，签到/删除收藏需 2.7.9+".format(client_type=self.client_type.upper())
             )
             yield event.plain_result(help_text)
             return
 
         album_id = args[1]
+
+        # 支持批量下载：逗号分隔多个ID，如 /jm 123,456,789
+        if ',' in album_id:
+            async for msg in self._download_batch(event, album_id):
+                yield msg
+            return
 
         # 先找downloads里有没有已经下载好的漫画
         existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
@@ -510,7 +710,24 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"⬇️ 开始下载 JM{album_id} ...")
 
         try:
-            result = await jmcomic.download_album_async(album_id, self.option)
+            # 启动下载任务（使用带进度跟踪的下载器）
+            download_task = asyncio.create_task(
+                jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
+            )
+
+            # 定期推送下载进度
+            last_pct = -1
+            while not download_task.done():
+                await asyncio.sleep(3)
+                prog = ProgressDownloader._progress.get(str(album_id))
+                if prog and prog['total'] > 0 and not prog['finished']:
+                    pct = int(prog['done'] / prog['total'] * 100)
+                    if pct != last_pct and pct < 100:
+                        last_pct = pct
+                        yield event.plain_result(f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
+
+            # 获取下载结果
+            result = download_task.result()
             album = result.detail
 
             album_dir = Path(album.save_path)
@@ -574,8 +791,7 @@ class JmComicPlugin(Star):
                 yield event.plain_result(random.choice(teases))
 
         except Exception as e:
-            logger.error(f"下载失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "下载"))
 
     # ========== /jmrand 随机漫画 ==========
     @filter.command("jmrand")
@@ -626,8 +842,7 @@ class JmComicPlugin(Star):
             )
 
         except Exception as e:
-            logger.error(f"随机失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 随机失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "随机抽漫"))
 
     # ========== /jms 全站搜索 ==========
     @filter.command("jms")
@@ -759,8 +974,24 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"⬇️ 开始下载 JM{album_id} 并生成PDF ...")
 
         try:
-            # 先下载
-            result = await jmcomic.download_album_async(album_id, self.option)
+            # 启动下载任务（使用带进度跟踪的下载器）
+            download_task = asyncio.create_task(
+                jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
+            )
+
+            # 定期推送下载进度
+            last_pct = -1
+            while not download_task.done():
+                await asyncio.sleep(3)
+                prog = ProgressDownloader._progress.get(str(album_id))
+                if prog and prog['total'] > 0 and not prog['finished']:
+                    pct = int(prog['done'] / prog['total'] * 100)
+                    if pct != last_pct and pct < 100:
+                        last_pct = pct
+                        yield event.plain_result(f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
+
+            # 获取下载结果
+            result = download_task.result()
             album = result.detail
             album_dir = Path(album.save_path)
 
@@ -841,8 +1072,277 @@ class JmComicPlugin(Star):
                 yield event.plain_result(random.choice(teases))
 
         except Exception as e:
-            logger.error(f"PDF下载失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "PDF下载"))
+
+    # ========== /jmphoto 单章节下载 ==========
+    @filter.command("jmphoto")
+    async def jm_download_photo(self, event: AstrMessageEvent):
+        """下载单个章节，用法：/jmphoto <章节id>
+        章节ID可在 /jmv 详情中查看章节列表获取
+        """
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result(
+                "用法：/jmphoto <章节id>\n"
+                "章节ID可通过 /jmv <漫画id> 查看章节列表获取"
+            )
+            return
+
+        photo_id = args[1]
+        yield event.plain_result(f"⬇️ 开始下载章节 JM{photo_id} ...")
+
+        try:
+            # 下载单章节
+            result = await jmcomic.download_photo_async(photo_id, self.option)
+            photo = result.detail
+            photo_dir = Path(photo.save_path)
+
+            if not photo_dir.exists():
+                yield event.plain_result("⚠️ 下载完成但找不到目录")
+                return
+
+            # 打包ZIP
+            zip_name = f"JM{photo_id}_{photo.name[:30]}.zip"
+            for ch in r'\/:*?"<>|':
+                zip_name = zip_name.replace(ch, '_')
+            zip_path = self.zip_base_dir / zip_name
+
+            await asyncio.to_thread(self._zip_folder, photo_dir, zip_path)
+            size_mb = zip_path.stat().st_size / 1024 / 1024
+
+            yield event.plain_result(
+                f"✅ 章节下载完成！耗时 {result.duration:.1f}s，大小 {size_mb:.1f}MB\n"
+                f"正在发送文件..."
+            )
+            yield event.chain_result([
+                Comp.Plain(f"📎 {zip_name}\n"),
+                Comp.File(file=str(zip_path), name=zip_name)
+            ])
+            zip_path.unlink(missing_ok=True)
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "章节下载"))
+
+    # ========== /jmlong 长图导出 ==========
+    @filter.command("jmlong")
+    async def jm_long_image(self, event: AstrMessageEvent):
+        """下载漫画并合并为长图PNG发送，用法：/jmlong <id>
+        手机上直接看图比ZIP/PDF更方便
+        """
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法：/jmlong <漫画id>")
+            return
+
+        album_id = args[1]
+
+        # 先找已下载的缓存
+        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
+        if existing_album_dirs and existing_album_dirs[0].is_dir():
+            album_dir = existing_album_dirs[0]
+            yield event.plain_result(f"🖼️ 找到已下载的文件，正在生成长图...")
+        else:
+            yield event.plain_result(f"⬇️ 开始下载 JM{album_id} 并生成长图...")
+            try:
+                result = await jmcomic.download_album_async(album_id, self.option)
+                album_dir = Path(result.detail.save_path)
+            except Exception as e:
+                yield event.plain_result(self._handle_jm_exception(e, "下载"))
+                return
+
+        try:
+            # 找所有图片，按顺序排序
+            image_files = sorted(
+                [f for f in album_dir.rglob("*.jpg")] +
+                [f for f in album_dir.rglob("*.png")] +
+                [f for f in album_dir.rglob("*.webp")]
+            )
+            if not image_files:
+                yield event.plain_result("⚠️ 找不到图片文件")
+                return
+
+            yield event.plain_result(f"🖼️ 正在合并 {len(image_files)} 张图片为长图...")
+
+            from PIL import Image
+            images = []
+            for img_path in image_files:
+                try:
+                    img = Image.open(img_path).convert('RGB')
+                    images.append(img)
+                except Exception:
+                    continue
+
+            if not images:
+                yield event.plain_result("⚠️ 图片打开失败")
+                return
+
+            # 统一宽度，竖向拼接
+            min_width = min(img.width for img in images)
+            total_height = 0
+            resized = []
+            for img in images:
+                if img.width > min_width:
+                    new_height = int(img.height * min_width / img.width)
+                    img = img.resize((min_width, new_height), Image.LANCZOS)
+                resized.append(img)
+                total_height += img.height
+
+            long_img = Image.new('RGB', (min_width, total_height))
+            y_offset = 0
+            for img in resized:
+                long_img.paste(img, (0, y_offset))
+                y_offset += img.height
+
+            # 保存长图
+            long_name = f"JM{album_id}_long.png"
+            long_path = self.zip_base_dir / long_name
+            long_img.save(long_path, 'PNG', optimize=True)
+            size_mb = long_path.stat().st_size / 1024 / 1024
+
+            for img in images:
+                img.close()
+            long_img.close()
+
+            yield event.plain_result(f"✅ 长图生成完成！{min_width}x{total_height}，{size_mb:.1f}MB，发送中...")
+            yield event.chain_result([
+                Comp.Image(file=str(long_path))
+            ])
+            long_path.unlink(missing_ok=True)
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "生成长图"))
+
+    # ========== /jmcheckin 每日签到 ==========
+    @filter.command("jmcheckin")
+    async def jm_checkin(self, event: AstrMessageEvent):
+        """每日签到领金币经验，用法：/jmcheckin"""
+        try:
+            client = self.option.new_jm_client()
+
+            # jmcomic 2.7.5 及以下版本不支持签到接口
+            if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
+                yield event.plain_result(
+                    "⚠️ 当前 jmcomic 版本不支持每日签到功能\n"
+                    "请升级 jmcomic 到最新版本：pip install -U jmcomic"
+                )
+                return
+
+            # 先获取签到信息
+            yield event.plain_result("📅 正在获取签到信息...")
+            daily = await asyncio.to_thread(client.get_daily)
+
+            # 解析签到信息
+            signed_dates = []
+            old_step = 0
+            today_signed = False
+            try:
+                # API 客户端返回 model_data
+                if hasattr(daily, 'model_data'):
+                    data = daily.model_data
+                    old_step = data.get('oldStep', 0) or 0
+                    today_signed = data.get('error') == 'finished'
+                    # record 是按周划分的签到矩阵
+                    record = data.get('record', [])
+                    for week in record:
+                        for day in week:
+                            if day.get('signed'):
+                                signed_dates.append(day.get('date'))
+                elif hasattr(daily, 'json'):
+                    # HTML 客户端返回 json
+                    data = daily.json()
+                    old_step = data.get('oldStep', 0) or 0
+                    today_signed = data.get('error') == 'finished'
+                    signed_dates = data.get('dateArray', [])
+            except Exception:
+                pass
+
+            # 执行签到
+            yield event.plain_result("✅ 正在签到...")
+            resp = await asyncio.to_thread(client.daily_checkin)
+
+            if resp.code == 0:
+                result_msg = f"🎉 签到成功！\n{resp.msg}"
+            elif resp.code == 1:
+                result_msg = f"📌 今日已签到\n{resp.msg}"
+            else:
+                result_msg = f"签到结果：{resp.msg}"
+
+            reply = f"📅 每日签到\n\n{result_msg}\n\n"
+            reply += f"🔥 连续签到：{old_step} 天\n"
+            reply += f"📆 本月已签：{len(signed_dates)} 天"
+            if today_signed or resp.code == 1:
+                reply += "\n\n✅ 今日已完成签到"
+
+            yield event.plain_result(reply)
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "签到"))
+
+    # ========== /jmme 用户面板 ==========
+    @filter.command("jmme")
+    async def jm_user_info(self, event: AstrMessageEvent):
+        """查看用户信息面板，用法：/jmme"""
+        try:
+            client = self.option.new_jm_client()
+
+            # 从配置读取登录用户名
+            username = ""
+            try:
+                for plugin in self.option.plugins.after_init:
+                    if plugin.get('plugin') == 'login':
+                        username = plugin.get('kwargs', {}).get('username', '')
+                        break
+            except:
+                pass
+
+            if not username:
+                yield event.plain_result("⚠️ 未配置登录账号，请在插件配置中填写账号密码")
+                return
+
+            # 获取签到信息（jmcomic 2.7.5+ 才支持）
+            old_step = 0
+            today_signed = False
+            if hasattr(client, 'get_daily'):
+                try:
+                    daily = await asyncio.to_thread(client.get_daily)
+                    if hasattr(daily, 'model_data'):
+                        data = daily.model_data
+                        old_step = data.get('oldStep', 0) or 0
+                        today_signed = data.get('error') == 'finished'
+                except Exception:
+                    pass
+
+            # 获取收藏数（通过收藏夹第一页）
+            fav_count = "未知"
+            try:
+                fav_page = await asyncio.to_thread(client.favorite_folder, 1)
+                fav_total = getattr(fav_page, 'total', None)
+                if fav_total is not None:
+                    fav_count = str(fav_total)
+            except Exception:
+                pass
+
+            reply = f"👤 用户面板\n\n"
+            reply += f"📛 用户名：{username}\n"
+            if hasattr(client, 'get_daily'):
+                reply += f"🔥 连续签到：{old_step} 天\n"
+                reply += f"📅 今日签到：{'✅ 已签' if today_signed else '❌ 未签'}\n"
+            reply += f"⭐ 收藏数量：{fav_count}\n"
+            if hasattr(client, 'daily_checkin'):
+                reply += f"\n💡 /jmcheckin 立即签到"
+            else:
+                reply += f"\n💡 签到功能需升级 jmcomic 到最新版本"
+
+            yield event.plain_result(reply)
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "获取用户信息"))
 
     # ========== /jmrank 排行榜 ==========
     @filter.command("jmrank")
@@ -912,8 +1412,7 @@ class JmComicPlugin(Star):
             yield event.plain_result(reply)
 
         except Exception as e:
-            logger.error(f"排行榜获取失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "获取排行榜"))
 
     # ========== /jmhis 下载历史 ==========
     @filter.command("jmhis")
@@ -946,56 +1445,101 @@ class JmComicPlugin(Star):
     # ========== /jmc 评论查看 ==========
     @filter.command("jmc")
     async def jm_comments(self, event: AstrMessageEvent):
-        """查看评论，用法：/jmc <id>"""
+        """查看评论，用法：/jmc <id> [页码]
+        支持翻页，展示回复楼、剧透标记、点赞数
+        """
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jmc <漫画id>")
+            yield event.plain_result("用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
             return
 
         album_id = args[1]
-        yield event.plain_result(f"💬 获取 JM{album_id} 的评论...")
+        page_num = int(args[2]) if len(args) >= 3 and args[2].isdigit() else 1
+
+        # HTML 客户端不支持评论翻页，最多10条
+        if page_num > 1 and self.client_type != 'api':
+            yield event.plain_result("⚠️ 评论翻页仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+            return
+
+        yield event.plain_result(f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
 
         try:
             client = self.option.new_jm_client()
-            page = await asyncio.to_thread(client.album_pagination, album_id, page=1)
+            page = await asyncio.to_thread(client.album_pagination, album_id, page=page_num)
 
             comments = list(page)
             if not comments:
                 yield event.plain_result("还没有评论")
                 return
 
-            results = []
-            for i, comment in enumerate(comments[:self.comment_count]):
-                nickname = getattr(comment, 'nickname', getattr(comment, 'username', '匿名'))
-                content = getattr(comment, 'content', '')
-                # 去掉换行，太长截断，敏感词转拼音
-                content = content.replace('\n', ' ').strip()[:100]
+            def format_comment(comment, indent=0):
+                """格式化单条评论，支持嵌套回复"""
+                prefix = "  " * indent
+                nickname = getattr(comment, 'nickname', None) or getattr(comment, 'username', '匿名')
+                content = getattr(comment, 'content', '') or ''
+                content = content.replace('\n', ' ').strip()[:120]
                 if self.convert_comment:
                     content = self._to_simplified(content)
                 content = self._sanitize_tags([content])[0] if content else ''
-                results.append(f"{i+1}. {nickname}：{content}")
 
-            reply = f"💬 JM{album_id} 评论（前10条）：\n\n" + "\n".join(results)
+                spoiler = " ⚠️剧透" if getattr(comment, 'is_spoiler', False) else ""
+                likes = getattr(comment, 'likes', None)
+                likes_str = f" 👍{likes}" if likes is not None else ""
+                created = getattr(comment, 'created_at', '')
+                time_str = f" ({created})" if created else ""
+
+                line = f"{prefix}{nickname}{spoiler}{likes_str}{time_str}：{content}"
+                lines = [line]
+
+                # 嵌套回复
+                for reply in getattr(comment, 'replies', []) or []:
+                    lines.extend(format_comment(reply, indent + 1))
+
+                return lines
+
+            results = []
+            for i, comment in enumerate(comments[:self.comment_count]):
+                results.append(f"{i+1}.")
+                results.extend(format_comment(comment, indent=1))
+
+            # 分页信息
+            total = getattr(page, 'total', None)
+            page_count = getattr(page, 'page_count', None)
+            header = f"💬 JM{album_id} 评论（第{page_num}页"
+            if total is not None:
+                header += f"，共{total}条"
+            if page_count is not None:
+                header += f"，共{page_count}页"
+            header += "）"
+
+            reply = header + "\n\n" + "\n".join(results)
+
+            # 下一页提示
+            if page_count is None or page_num < page_count:
+                reply += f"\n\n下一页：/jmc {album_id} {page_num + 1}"
+
             yield event.plain_result(reply)
 
         except Exception as e:
-            logger.error(f"获取评论失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 获取评论失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "获取评论"))
 
     # ========== /jmdomain 查看可用域名 ==========
     @filter.command("jmdomain")
     async def jm_domain(self, event: AstrMessageEvent):
-        """查看最新可用镜像站域名"""
-        yield event.plain_result("🌐 正在获取最新可用域名...")
+        """查看当前可用域名列表"""
+        yield event.plain_result("🌐 正在获取可用域名...")
         try:
             client = self.option.new_jm_client()
-            domains = await asyncio.to_thread(client.get_html_domain_all_via_github)
-            reply = "🌐 JM 最新可用域名列表：\n\n" + "\n".join(domains[:10])
-            reply += "\n\n如果当前域名连不上，可以在插件配置里换成上面的域名"
+            domains = client.get_domain_list()
+            client_label = "API" if self.client_type == "api" else "HTML"
+            reply = f"🌐 JM 当前可用 {client_label} 域名列表：\n\n" + "\n".join(f"  {i+1}. {d}" for i, d in enumerate(domains[:10]))
+            if self.client_type == "api":
+                reply += "\n\nAPI 客户端会自动选择最快的域名并自动更新，一般无需手动配置"
+            else:
+                reply += "\n\nHTML 客户端需手动配置可用域名，如连不上可尝试更换"
             yield event.plain_result(reply)
         except Exception as e:
-            logger.error(f"获取域名失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 获取失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "获取域名"))
 
     # ========== /jmupdate 查看更新日志 ==========
     @filter.command("jmupdate")
@@ -1018,6 +1562,7 @@ class JmComicPlugin(Star):
         /jmfav → 查看收藏夹文件夹列表
         /jmfav <文件夹id> → 查看文件夹里的内容
         /jmfav add <漫画id> → 把漫画加入收藏夹
+        /jmfav del <漫画id> → 从收藏夹移除
         """
         args = event.message_str.split()
 
@@ -1038,32 +1583,95 @@ class JmComicPlugin(Star):
                 yield event.plain_result("⚠️ 未配置登录账号，无法使用收藏夹功能")
                 return
 
-            # /jmfav → 显示收藏的漫画列表
-            yield event.plain_result("⭐ 获取我的收藏夹...")
-            page = await asyncio.to_thread(client.favorite_folder, 1, username=username)
-            items = list(page.iter_id_title_tag())
-
-            if not items:
-                yield event.plain_result("你还没有收藏任何漫画")
+            # /jmfav add <id> — 添加收藏（仅API客户端支持）
+            if len(args) >= 3 and args[1].lower() == 'add':
+                if self.client_type != 'api':
+                    yield event.plain_result("⚠️ 添加收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+                    return
+                album_id = args[2]
+                yield event.plain_result(f"⭐ 正在收藏 JM{album_id} ...")
+                await asyncio.to_thread(client.add_favorite_album, album_id, folder_id='0')
+                yield event.plain_result(f"✅ 已收藏 JM{album_id}")
                 return
 
-            results = []
-            for i, (aid, title, tags) in enumerate(items[:20]):
-                if self.convert_title:
-                    title = self._to_simplified(title)
-                if self.convert_tags:
-                    tags = [self._to_simplified(t) for t in tags]
-                safe_tags = self._sanitize_tags(tags[:3])
-                tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
-                results.append(f"{i+1}. [JM{aid}] {title}{tag_str}")
+            # /jmfav del <id> — 删除收藏（仅API客户端支持，且需jmcomic较新版本）
+            if len(args) >= 3 and args[1].lower() == 'del':
+                if self.client_type != 'api':
+                    yield event.plain_result("⚠️ 移除收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+                    return
+                if not hasattr(client, 'delete_favorite_album'):
+                    yield event.plain_result("⚠️ 当前 jmcomic 版本不支持移除收藏，请升级 jmcomic 到最新版本")
+                    return
+                album_id = args[2]
+                yield event.plain_result(f"🗑️ 正在移除收藏 JM{album_id} ...")
+                await asyncio.to_thread(client.delete_favorite_album, album_id, folder_id='0')
+                yield event.plain_result(f"✅ 已移除收藏 JM{album_id}")
+                return
 
-            reply = f"⭐ 我的收藏（共{len(items)}本，显示前20本）：\n\n" + "\n".join(results)
-            reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
+            # /jmfav <folder_id> — 查看指定文件夹内容
+            if len(args) >= 2 and args[1].isdigit():
+                folder_id = args[1]
+                yield event.plain_result(f"⭐ 获取收藏夹 [ID:{folder_id}] 的内容...")
+                page = await asyncio.to_thread(client.favorite_folder, 1, folder_id=folder_id)
+                items = list(page.iter_id_title_tag())
+
+                if not items:
+                    yield event.plain_result("这个收藏夹是空的")
+                    return
+
+                results = []
+                for i, (aid, title, tags) in enumerate(items[:20]):
+                    if self.convert_title:
+                        title = self._to_simplified(title)
+                    if self.convert_tags:
+                        tags = [self._to_simplified(t) for t in tags]
+                    safe_tags = self._sanitize_tags(tags[:3])
+                    tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
+                    results.append(f"{i+1}. [JM{aid}] {title}{tag_str}")
+
+                reply = f"⭐ 收藏夹 [ID:{folder_id}]（共{len(items)}本，显示前20本）：\n\n" + "\n".join(results)
+                reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
+                yield event.plain_result(reply)
+                return
+
+            # /jmfav — 列出收藏夹文件夹
+            yield event.plain_result("⭐ 获取我的收藏夹列表...")
+            page = await asyncio.to_thread(client.favorite_folder, 1)
+
+            # 列出所有收藏夹文件夹
+            folders = list(page.iter_folder_id_name())
+            if not folders:
+                # 如果没有文件夹列表，直接显示全部收藏
+                items = list(page.iter_id_title_tag())
+                if not items:
+                    yield event.plain_result("你还没有收藏任何漫画")
+                    return
+                results = []
+                for i, (aid, title, tags) in enumerate(items[:20]):
+                    if self.convert_title:
+                        title = self._to_simplified(title)
+                    if self.convert_tags:
+                        tags = [self._to_simplified(t) for t in tags]
+                    safe_tags = self._sanitize_tags(tags[:3])
+                    tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
+                    results.append(f"{i+1}. [JM{aid}] {title}{tag_str}")
+                reply = f"⭐ 我的收藏（共{len(items)}本，显示前20本）：\n\n" + "\n".join(results)
+                reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
+                yield event.plain_result(reply)
+                return
+
+            # 显示文件夹列表
+            folder_lines = []
+            for fid, fname in folders:
+                fname_cn = self._to_simplified(fname) if self.convert_title else fname
+                folder_lines.append(f"  📁 [ID:{fid}] {fname_cn}")
+
+            reply = "⭐ 我的收藏夹文件夹：\n\n" + "\n".join(folder_lines)
+            reply += "\n\n💡 /jmfav <文件夹id> 查看内容，/jmfav add <漫画id> 添加收藏"
             yield event.plain_result(reply)
 
         except Exception as e:
-            logger.error(f"收藏夹操作失败: {e}", exc_info=True)
-            yield event.plain_result(f"❌ 失败：{e}")
+            yield event.plain_result(self._handle_jm_exception(e, "收藏夹操作"))
 
     async def terminate(self):
         pass

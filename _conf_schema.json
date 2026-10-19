@@ -1,4 +1,9 @@
 {
+  "client_type": {
+    "type": "string",
+    "default": "api",
+    "description": "客户端类型：api=API客户端（推荐，支持收藏添加/评论翻页/签到，不支持分类筛选），html=HTML客户端（支持分类筛选，收藏添加/评论翻页受限）"
+  },
   "username": {
     "type": "string",
     "default": "",
