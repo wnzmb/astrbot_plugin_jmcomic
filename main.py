@@ -25,16 +25,18 @@ try:
     from jmcomic.jm_exception import DownloadCancelledException
 except ImportError:
     DownloadCancelledException = None
-from jmcomic.jm_downloader import JmDownloader
+from jmcomic.jm_async_downloader import JmAsyncDownloader
 
 
-class ProgressDownloader(JmDownloader):
-    """带进度跟踪的下载器，进度存在类变量中按 album_id 隔离"""
+class ProgressDownloader(JmAsyncDownloader):
+    """带进度跟踪的下载器，进度存在类变量中按 album_id 隔离
+    适配 jmcomic 2.7.9+ 的异步下载器架构（async 上下文管理器 + 异步钩子）
+    """
     # key: album_id, value: {'total': int, 'done': int, 'finished': bool}
     _progress = {}
 
-    def before_album(self, album):
-        super().before_album(album)
+    async def before_album(self, album):
+        await super().before_album(album)
         total = 0
         for photo in album:
             if photo.page_arr:
@@ -45,8 +47,8 @@ class ProgressDownloader(JmDownloader):
             'finished': False,
         }
 
-    def after_image(self, image, img_save_path):
-        super().after_image(image, img_save_path)
+    async def after_image(self, image, img_save_path):
+        await super().after_image(image, img_save_path)
         try:
             album_id = str(image.from_photo.album_id)
             if album_id in ProgressDownloader._progress:
@@ -54,8 +56,8 @@ class ProgressDownloader(JmDownloader):
         except Exception:
             pass
 
-    def after_album(self, album):
-        super().after_album(album)
+    async def after_album(self, album):
+        await super().after_album(album)
         aid = str(album.album_id)
         if aid in ProgressDownloader._progress:
             ProgressDownloader._progress[aid]['finished'] = True
@@ -243,6 +245,27 @@ class JmComicPlugin(Star):
         else:
             logger.error(f"{action}失败: {e}", exc_info=True)
             return f"❌ {action}失败：{e}"
+
+    def _new_logged_client(self):
+        """创建客户端；若配置了账号密码则同步登录一次，确保会员登录态。
+
+        签到、收藏夹、搜索等接口需要登录态：
+        - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
+          新 client 的 _user_id 恒为 None，daily_checkin/get_daily 会直接报
+          "签到需要传入 user_id 参数，或者先调用 login 方法"。
+        - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
+        这里在每次创建客户端时主动 login 一次，并给出可操作的错误提示。
+        """
+        client = self.option.new_jm_client()
+        username = self.config.get("username", "")
+        password = self.config.get("password", "")
+        if username and password:
+            try:
+                client.login(username, password)
+                logger.info("JMComic 客户端登录成功")
+            except Exception as e:
+                raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
+        return client
 
     def _to_simplified(self, text):
         """繁体转简体"""
@@ -862,7 +885,7 @@ class JmComicPlugin(Star):
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
-        client = self.option.new_jm_client()
+        client = self._new_logged_client()
 
         async for result in self._render_search_page(
             event, client, client.search_site, keyword, qq_page, order_by, "全站搜索"
@@ -879,7 +902,7 @@ class JmComicPlugin(Star):
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
-        client = self.option.new_jm_client()
+        client = self._new_logged_client()
 
         async for result in self._render_search_page(
             event, client, client.search_author, keyword, qq_page, order_by, "作者搜索"
@@ -896,7 +919,7 @@ class JmComicPlugin(Star):
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
-        client = self.option.new_jm_client()
+        client = self._new_logged_client()
 
         async for result in self._render_search_page(
             event, client, client.search_tag, keyword, qq_page, order_by, "标签搜索"
@@ -913,7 +936,7 @@ class JmComicPlugin(Star):
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
-        client = self.option.new_jm_client()
+        client = self._new_logged_client()
 
         async for result in self._render_search_page(
             event, client, client.search_actor, keyword, qq_page, order_by, "角色搜索"
@@ -930,7 +953,7 @@ class JmComicPlugin(Star):
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
-        client = self.option.new_jm_client()
+        client = self._new_logged_client()
 
         async for result in self._render_search_page(
             event, client, client.search_work, keyword, qq_page, order_by, "原作搜索"
@@ -1223,7 +1246,7 @@ class JmComicPlugin(Star):
     async def jm_checkin(self, event: AstrMessageEvent):
         """每日签到领金币经验，用法：/jmcheckin"""
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
 
             # jmcomic 2.7.5 及以下版本不支持签到接口
             if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
@@ -1289,7 +1312,7 @@ class JmComicPlugin(Star):
     async def jm_user_info(self, event: AstrMessageEvent):
         """查看用户信息面板，用法：/jmme"""
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
 
             # 从配置读取登录用户名
             username = ""
@@ -1567,7 +1590,7 @@ class JmComicPlugin(Star):
         args = event.message_str.split()
 
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
 
             # 从配置里读登录的用户名
             username = ""

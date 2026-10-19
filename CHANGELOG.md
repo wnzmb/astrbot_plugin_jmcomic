@@ -1,5 +1,13 @@
 # 更新日志
 
+## v0.6.1 - 2026-10-20
+
+### 🐛 修复
+- 修复下载失败：`ProgressDownloader` 改为继承 `JmAsyncDownloader`（适配 jmcomic 2.7.9+ 异步下载器架构），钩子方法异步化，`/jm`、`/jmpdf`、批量下载恢复正常，不再报 "object does not support the asynchronous context manager protocol"
+- 修复签到失败：新增 `_new_logged_client()`，签到/用户面板/收藏夹/搜索命令创建客户端时主动 login，解决 "签到需要传入 user_id 参数，或者先调用 login 方法"
+- 修复收藏夹 401 未登录：登录态在每次命令调用时主动刷新，登录失败给出明确提示（检查账号密码/镜像域名），不再静默
+- 搜索未登录/镜像异常时提示更明确，不再出现模糊的 `KeyError: 'code'`
+
 ## v0.6.0 - 2026-10-19
 
 ### 🔥 架构升级
