@@ -17,7 +17,7 @@ import jmcomic
 from jmcomic import JmMagicConstants
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.1")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.2")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -53,6 +53,7 @@ class JmComicPlugin(Star):
         self.cache_days = int(self.config.get("cache_days", 7))
         self.comment_count = int(self.config.get("comment_count", 10))
         self.history_max = int(self.config.get("history_max", 50))
+        self.dual_search = self.config.get("dual_search", True)
 
         # 解析用户自定义敏感词
         self.custom_sensitive_map = {}
@@ -291,24 +292,25 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"🔍 {title_prefix}{keyword}（{order_name}，第{qq_page}页）...")
 
         try:
-            # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
-            import zhconv
-            keyword_traditional = zhconv.convert(keyword, 'zh-tw')
-            all_items = []
-            for kw in [keyword, keyword_traditional]:
-                if kw == keyword:
+            if self.dual_search:
+                # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
+                import zhconv
+                keyword_traditional = zhconv.convert(keyword, 'zh-tw')
+                all_items = []
+                for kw in [keyword, keyword_traditional]:
                     page = await asyncio.to_thread(search_method, kw, web_page, order_by)
-                else:
-                    page = await asyncio.to_thread(search_method, kw, web_page, order_by)
-                all_items.extend(list(page.iter_id_title_tag()))
-            # 去重
-            seen = set()
-            unique_items = []
-            for item in all_items:
-                if item[0] not in seen:
-                    seen.add(item[0])
-                    unique_items.append(item)
-            all_items = unique_items
+                    all_items.extend(list(page.iter_id_title_tag()))
+                # 去重
+                seen = set()
+                unique_items = []
+                for item in all_items:
+                    if item[0] not in seen:
+                        seen.add(item[0])
+                        unique_items.append(item)
+                all_items = unique_items
+            else:
+                page = await asyncio.to_thread(search_method, keyword, web_page, order_by)
+                all_items = list(page.iter_id_title_tag())
             start = offset_in_web_page
             end = start + PER_QQ_PAGE
             page_items = all_items[start:end]

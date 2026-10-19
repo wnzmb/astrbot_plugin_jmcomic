@@ -92,5 +92,10 @@
     "type": "int",
     "default": 50,
     "description": "下载历史最多保留条数（10-100）"
+  },
+  "dual_search": {
+    "type": "bool",
+    "default": true,
+    "description": "开启简繁双搜索：自动同时用简/繁体关键词搜索，避免漏结果"
   }
 }
