@@ -1,6 +1,6 @@
 # AstrBot JMComic 插件
 
-漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、下载并发 ZIP。
+漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、评论、下载ZIP/PDF、排行榜、随机抽漫、收藏夹查看、下载历史、敏感词自动转拼音、简繁自动转换等功能，所有参数均可在配置页自定义。
 
 ---
 
@@ -100,7 +100,7 @@
 ## 其他说明
 
 - **数据存储**：所有下载文件和配置都保存在 `data/plugin_data/astrbot_plugin_jmcomic/` 目录下，插件更新不会丢失
-- **自动清理**：发送完 ZIP 后自动删除原始图片文件，只保留打包好的 ZIP，节省硬盘空间
+- **自动清理**：发送完 ZIP/PDF 后自动删除临时打包文件，保留原始图片缓存，下次下载同本直接复用
 - **下载历史**：自动记录最近下载记录，用 `/jmhis` 查看
 - **收藏夹**：需要配置账号密码才能使用收藏夹功能
 
