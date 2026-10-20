@@ -75,13 +75,13 @@
   "pdf_group_size": {
     "type": "int",
     "default": 5,
-    "description": "PDF 合并章数",
+    "description": "PDF/ZIP 合并章数",
     "slider": {
       "min": 1,
       "max": 50,
       "step": 1
     },
-    "hint": "每 N 章合并成一个 PDF，默认 5；填 1 表示每章一个。所有多章漫画（含 -c 选章）都按此设置，命令中不再支持 -g。"
+    "hint": "每 N 章合并成一个 PDF 或 ZIP，默认 5；填 1 表示每章一个。所有多章漫画（含 -c 选章）都按此设置，命令中不再支持 -g。"
   },
   "cache_days": {
     "type": "int",
@@ -126,19 +126,19 @@
     "type": "bool",
     "default": true,
     "description": "繁转简总开关",
-    "hint": "开启后对标题、标签、作者、评论做繁转简；关闭后下面的单项转换全部不生效。"
+    "hint": "开启后对非账号命令的输出做繁转简；关闭后下面的单项转换全部不生效。"
   },
   "convert_title": {
     "type": "bool",
     "default": true,
     "description": "转换标题",
-    "hint": "把漫画/章节标题转换为简体中文。"
+    "hint": "把漫画/章节标题转换为简体中文，同时作为查询提示、章节名和文件名的默认繁转简开关。"
   },
   "convert_tags": {
     "type": "bool",
     "default": true,
     "description": "转换标签",
-    "hint": "把标签转换为简体中文。"
+    "hint": "把标签和人物名转换为简体中文。"
   },
   "convert_author": {
     "type": "bool",
@@ -156,7 +156,7 @@
     "type": "bool",
     "default": true,
     "description": "敏感词过滤",
-    "hint": "开启后把标题、标签、作者、角色中的敏感词替换为拼音，降低 QQ 消息违规概率。"
+    "hint": "开启后对所有非账号命令输出做敏感词替换，包括标题、标签、查询提示和下载进度，降低 QQ 消息违规概率。"
   },
   "custom_sensitive": {
     "type": "text",

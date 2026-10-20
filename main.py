@@ -73,7 +73,7 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.0")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.1")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -95,8 +95,8 @@ class JmComicPlugin(Star):
         domain_str = self.config.get("domain", "")
         # 支持多个域名，逗号分隔
         custom_domains = [d.strip() for d in domain_str.split(",") if d.strip()]
-        photo_threads = int(self.config.get("photo_threads", 8))
-        image_threads = int(self.config.get("image_threads", 20))
+        photo_threads = int(self.config.get("photo_threads", 2))
+        image_threads = int(self.config.get("image_threads", 5))
         self.per_page = int(self.config.get("per_page", 10))
         self.allow_group = self.config.get("allow_group", True)
         self.convert_enabled = self.config.get("convert_enabled", True)
@@ -234,7 +234,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.7.0，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.7.1，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -1571,7 +1571,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.0\n"
+                "📖 漫画站插件 帮助 v0.7.1\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -1581,7 +1581,7 @@ class JmComicPlugin(Star):
                 "  /jmw 原作名 [页码] [排序]   按原作搜索\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
-                "  /jmv <漫画id> [选项]       查详情(含章节列表/标签/人物)\n"
+                "  /jmv <漫画id> [选项]       查详情(含章节/标签/人物/作品)\n"
                 "    选项：-author -work -role -tag -pic(不发封面)\n"
                 "  /jmlist <漫画id> [页码]    查看全部章节（纯文本，不发封面）\n"
                 "  /jmc <漫画id> [页码]        看评论(翻页/回复/剧透，超页自动提示)\n"
@@ -1596,7 +1596,8 @@ class JmComicPlugin(Star):
                 "  /jmzip <漫画id>             下载整本，按后台配置合并ZIP（默认每5章）\n"
                 "  /jmzip <章节id>             自动识别为单章，发一个ZIP\n"
                 "  /jmzip id1,id2,id3          批量下载，支持漫画/章节ID混合\n"
-                "  /jmzip <id> -c 31-40        只下指定章节\n"
+                "  /jmzip <id> -c 31-40        下第31到40章\n"
+                "  /jmzip <id> -c 31,35,40     下指定章节\n"
                 "  /jmphoto <id>               等同 /jm <id>（兼容旧命令）\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⭐ 账号（仅号主）：\n"
@@ -1606,10 +1607,10 @@ class JmComicPlugin(Star):
                 "  /jmfav <文件夹id>           查看指定收藏夹\n"
                 "  /jmfav add <漫画id>         添加收藏\n"
                 "  /jmfav del <漫画id>         移除收藏\n"
-                "  /jmwhoami                   查看自己的ID（配置号主用）\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📊 其他：\n"
-                "  /jmrank day/week/month     排行榜\n"
+                "  /jmwhoami                   查看自己的ID（配置号主用，所有人可用）\n"
+                "  /jmrank day/week/month [页码]  排行榜\n"
                 "  /jmhis                      下载历史\n"
                 "    用法：/jmhis clear 清空历史 | /jmhis -all 查看全部成员(管理员)\n"
                 "  /jmdomain                   查看可用域名\n"
@@ -1622,10 +1623,12 @@ class JmComicPlugin(Star):
                 "📄 PDF/ZIP合并：每 {pdf_group_size} 章一个（配置页修改 pdf_group_size）\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
                 "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）\n"
-                "⏳ QQ文件限额：每日100个、每小时50个（本插件自动计数并提示）".format(
+                "⏳ QQ文件限额：每日{daily_file_limit}个、每小时{hourly_file_limit}个（本插件自动计数并提示）".format(
                     client_type=self.client_type.upper(),
                     cache_days=self.cache_days,
                     pdf_group_size=self.pdf_group_size,
+                    daily_file_limit=self.daily_file_limit,
+                    hourly_file_limit=self.hourly_file_limit,
                 )
             )
             yield self._plain(event, help_text)
@@ -2131,9 +2134,9 @@ class JmComicPlugin(Star):
         if len(args) < 2:
             yield self._plain(event,
                 "用法：\n"
-                "  /jmrank day    日榜\n"
-                "  /jmrank week   周榜\n"
-                "  /jmrank month  月榜"
+                "  /jmrank day [页码]    日榜\n"
+                "  /jmrank week [页码]   周榜\n"
+                "  /jmrank month [页码]  月榜"
             )
             return
 
