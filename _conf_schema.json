@@ -2,100 +2,206 @@
   "client_type": {
     "type": "string",
     "default": "api",
-    "description": "客户端类型：api=API客户端（推荐，支持收藏添加/评论翻页/签到，不支持分类筛选），html=HTML客户端（支持分类筛选，收藏添加/评论翻页受限）"
+    "description": "客户端类型",
+    "options": [
+      "api",
+      "html"
+    ],
+    "hint": "api=推荐，支持收藏、评论翻页和签到，不支持分类筛选；html=支持分类筛选，但收藏和评论功能受限。切换后需重载插件。"
   },
   "username": {
     "type": "string",
     "default": "",
-    "description": "禁漫天堂用户名（留空则不登录）"
+    "description": "JM 用户名",
+    "hint": "禁漫天堂账号用户名；留空则不登录。只用于 JM 账号功能，不是号主 ID。"
   },
   "password": {
     "type": "string",
     "default": "",
-    "description": "禁漫天堂密码"
+    "description": "JM 密码",
+    "hint": "禁漫天堂账号密码；只保存在本机插件配置中，不会写入仓库。"
   },
   "domain": {
     "type": "string",
     "default": "",
-    "description": "禁漫镜像站域名（多个用英文逗号分隔，自动切换可用的）"
+    "description": "镜像站域名",
+    "hint": "可填多个，英文逗号分隔，插件会自动切换可用域名。留空使用内置域名；例如 www.cdnhjk.net,comic18j-guta.site"
   },
   "allow_group": {
     "type": "bool",
     "default": true,
-    "description": "允许在群聊中使用（关闭后仅私聊可用）"
+    "description": "允许群聊使用",
+    "hint": "关闭后只允许私聊使用。群聊消息更容易触发平台审核，建议只对信任的群开启。"
+  },
+  "owner_ids": {
+    "type": "string",
+    "default": "",
+    "description": "号主 ID",
+    "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。QQ 官方机器人填 openid，不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
   },
   "photo_threads": {
     "type": "int",
     "default": 2,
-    "description": "章节下载并发数（1-16）"
+    "description": "章节并发数",
+    "slider": {
+      "min": 1,
+      "max": 16,
+      "step": 1
+    },
+    "hint": "同时下载的章节数量，默认 2。调高会加快下载，但更容易被站点限流。"
   },
   "image_threads": {
     "type": "int",
     "default": 5,
-    "description": "图片下载并发数（1-32）"
+    "description": "图片并发数",
+    "slider": {
+      "min": 1,
+      "max": 32,
+      "step": 1
+    },
+    "hint": "单章内同时下载的图片数量，默认 5。网络不稳定或经常失败时建议降低。"
   },
   "per_page": {
     "type": "int",
     "default": 10,
-    "description": "搜索结果每页显示条数（5-20）"
+    "description": "搜索每页条数",
+    "slider": {
+      "min": 5,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "搜索结果每页显示的漫画数量。"
   },
-  "convert_enabled": {
-    "type": "bool",
-    "default": true,
-    "description": "开启繁转简转换"
-  },
-  "convert_title": {
-    "type": "bool",
-    "default": true,
-    "description": "转换标题为简体"
-  },
-  "convert_tags": {
-    "type": "bool",
-    "default": true,
-    "description": "转换标签为简体"
-  },
-  "convert_author": {
-    "type": "bool",
-    "default": true,
-    "description": "转换作者为简体"
-  },
-  "convert_comment": {
-    "type": "bool",
-    "default": true,
-    "description": "转换评论为简体"
-  },
-  "sensitive_filter": {
-    "type": "bool",
-    "default": true,
-    "description": "开启敏感词自动转拼音"
-  },
-  "custom_sensitive": {
-    "type": "text",
-    "description": "敏感词转拼音规则，每行一条：敏感词=拼音"
-  },
-  "tease_enabled": {
-    "type": "bool",
-    "default": true,
-    "description": "开启下载次数调侃提醒"
+  "pdf_group_size": {
+    "type": "int",
+    "default": 5,
+    "description": "PDF 合并章数",
+    "slider": {
+      "min": 1,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "每 N 章合并成一个 PDF，默认 5；填 1 表示每章一个。所有多章漫画（含 -c 选章）都按此设置，命令中不再支持 -g。"
   },
   "cache_days": {
     "type": "int",
     "default": 7,
-    "description": "下载图片缓存保留天数（0为永久保留）"
+    "description": "缓存保留天数",
+    "slider": {
+      "min": 0,
+      "max": 365,
+      "step": 1
+    },
+    "hint": "下载图片缓存保留天数，0 表示永久保留。缓存可避免重复下载，但会占用磁盘空间。"
   },
   "comment_count": {
     "type": "int",
     "default": 10,
-    "description": "评论最多显示条数（1-10）"
+    "description": "评论显示条数",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "每次查看评论最多显示的条数。"
   },
   "history_max": {
     "type": "int",
     "default": 50,
-    "description": "下载历史最多保留条数（10-100）"
+    "description": "历史保留条数",
+    "slider": {
+      "min": 10,
+      "max": 100,
+      "step": 1
+    },
+    "hint": "每个用户最多保留的下载历史条数，用于 /jmhis 和下载次数调侃。"
+  },
+  "tease_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "下载次数调侃",
+    "hint": "下载到 3/5/7/10 等数量时随机发一句调侃提醒。觉得刷屏或想减少消息可关闭。"
+  },
+  "convert_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "繁转简总开关",
+    "hint": "开启后对标题、标签、作者、评论做繁转简；关闭后下面的单项转换全部不生效。"
+  },
+  "convert_title": {
+    "type": "bool",
+    "default": true,
+    "description": "转换标题",
+    "hint": "把漫画/章节标题转换为简体中文。"
+  },
+  "convert_tags": {
+    "type": "bool",
+    "default": true,
+    "description": "转换标签",
+    "hint": "把标签转换为简体中文。"
+  },
+  "convert_author": {
+    "type": "bool",
+    "default": true,
+    "description": "作者转简体",
+    "hint": "把作者名转换为简体中文。"
+  },
+  "convert_comment": {
+    "type": "bool",
+    "default": true,
+    "description": "评论转简体",
+    "hint": "把评论内容转换为简体中文。"
+  },
+  "sensitive_filter": {
+    "type": "bool",
+    "default": true,
+    "description": "敏感词过滤",
+    "hint": "开启后把标题、标签、作者、角色中的敏感词替换为拼音，降低 QQ 消息违规概率。"
+  },
+  "custom_sensitive": {
+    "type": "text",
+    "description": "自定义敏感词",
+    "editor_mode": true,
+    "editor_language": "plaintext",
+    "hint": "每行一条，格式：敏感词=拼音，例如 示例=shili。会在内置规则之外追加；不要加引号或逗号。"
   },
   "dual_search": {
     "type": "bool",
     "default": true,
-    "description": "开启简繁双搜索：自动同时用简/繁体关键词搜索，避免漏结果"
+    "description": "简繁双搜索",
+    "hint": "搜索时同时使用简体和繁体关键词，减少漏结果；会稍微增加请求量。"
+  },
+  "daily_file_limit": {
+    "type": "int",
+    "default": 100,
+    "description": "每日文件上限",
+    "slider": {
+      "min": 1,
+      "max": 500,
+      "step": 1
+    },
+    "hint": "本插件每天最多发送的文件数，默认 100（QQ 官方限制）。只统计本插件发送的文件。"
+  },
+  "hourly_file_limit": {
+    "type": "int",
+    "default": 50,
+    "description": "每小时文件上限",
+    "slider": {
+      "min": 1,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "本插件每小时最多发送的文件数，默认 50（QQ 官方限制）。超限后停止发送并提示用 -c 继续。"
+  },
+  "send_interval": {
+    "type": "float",
+    "default": 1.5,
+    "description": "文件发送间隔",
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 0.5
+    },
+    "hint": "每个 PDF/ZIP 发送后的等待秒数，默认 1.5 秒。调大可降低触发频率限制的概率，但发送更慢。"
   }
 }
