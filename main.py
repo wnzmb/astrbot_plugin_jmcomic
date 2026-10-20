@@ -531,7 +531,8 @@ class JmComicPlugin(Star):
         if len(args) < 2:
             yield event.plain_result(
                 "用法：/jmv <漫画id> [选项]\n"
-                "选项：-author 去掉作者 | -work 去掉原作 | -role 去掉角色\n"
+                "选项：-author 去掉作者 | -work 去掉原作 | -role 去掉角色 | -tag 去掉标签\n"
+                "      -desc 去掉简介 | -related 去掉相关推荐\n"
                 "示例：/jmv 350234 或 /jmv 350234 -role -work"
             )
             return
@@ -550,14 +551,18 @@ class JmComicPlugin(Star):
             works = getattr(album, 'works', [])
             actors = getattr(album, 'actors', [])
             tags = getattr(album, 'tags', [])
-            page_count = getattr(album, 'page_count', '?')
-            comment_count = getattr(album, 'comment_count', '?')
+            page_count = getattr(album, 'page_count', 0) or 0
+            comment_count = getattr(album, 'comment_count', 0) or 0
             description = getattr(album, 'description', '') or ''
             pub_date = getattr(album, 'pub_date', '') or ''
             update_date = getattr(album, 'update_date', '') or ''
             likes = getattr(album, 'likes', '') or ''
             views = getattr(album, 'views', '') or ''
             related_list = getattr(album, 'related_list', None) or []
+
+            # API客户端 page_count 可能为0，从章节累加计算
+            if page_count == 0 and chapters:
+                page_count = sum(len(getattr(p, 'page_arr', []) or []) for p in chapters)
 
             lines = [
                 f"📖 {self._to_simplified(album.name) if self.convert_title else album.name}",
@@ -594,29 +599,39 @@ class JmComicPlugin(Star):
                 if desc:
                     lines.append(f"📝 简介：{desc}")
 
-            # 统计信息
+            # 统计信息（API客户端update_date硬编码为'0'，过滤掉无效值）
             stats = []
             if likes:
                 stats.append(f"❤️ {likes}")
             if views:
                 stats.append(f"👁️ {views}")
-            stats.append(f"📄 {page_count}页")
-            stats.append(f"💬 {comment_count}条")
-            if pub_date:
+            if page_count and page_count != 0:
+                stats.append(f"📄 {page_count}页")
+            if comment_count and comment_count != 0:
+                stats.append(f"💬 {comment_count}条")
+            if pub_date and pub_date not in ('0', '', None):
                 stats.append(f"📅 {pub_date}")
-            lines.append(" | ".join(stats))
+            if stats:
+                lines.append(" | ".join(stats))
 
-            # 相关推荐
+            # 相关推荐（API客户端返回字典列表，含id/author/name/image）
             if related_list and '-related' not in options:
                 lines.append("\n🔗 相关推荐：")
                 for i, rel in enumerate(related_list[:5]):
-                    # related_list 可能是 album_id 字符串或 (id, title) 元组
-                    if isinstance(rel, (tuple, list)) and len(rel) >= 2:
+                    if isinstance(rel, dict):
+                        rel_id = rel.get('id', '')
+                        rel_title = rel.get('name', '')
+                        rel_author = rel.get('author', '')
+                    elif isinstance(rel, (tuple, list)) and len(rel) >= 2:
                         rel_id, rel_title = rel[0], rel[1]
+                        rel_author = ''
                     else:
-                        rel_id, rel_title = str(rel), str(rel)
-                    rel_title = self._to_simplified(rel_title) if self.convert_title else rel_title
-                    lines.append(f"  {i+1}. [JM{rel_id}] {rel_title[:30]}")
+                        rel_id, rel_title, rel_author = str(rel), str(rel), ''
+                    if self.convert_title:
+                        rel_title = self._to_simplified(rel_title)
+                        rel_author = self._to_simplified(rel_author)
+                    author_suffix = f"（{rel_author}）" if rel_author else ''
+                    lines.append(f"  {i+1}. [JM{rel_id}] {rel_title[:30]}{author_suffix}")
 
             # 章节列表（最多显示10章，方便获取章节ID用于单章下载）
             if chapters:
