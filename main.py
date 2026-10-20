@@ -774,10 +774,10 @@ class JmComicPlugin(Star):
                 "📖 详情：\n"
                 "  /jmv <漫画id> [选项]       查详情(含章节列表/简介/相关推荐)\n"
                 "    选项：-author -work -role -tag -desc -related\n"
-                "  /jmc <漫画id> [页码]        看评论(支持翻页/回复/剧透标记)\n"
+                "  /jmc <漫画id> [页码]        看评论(翻页/回复/剧透，超页自动提示)\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⬇️ 下载：\n"
-                "  /jm <漫画id>                下载并发ZIP(带进度推送)\n"
+                "  /jm <漫画id>                下载并发ZIP(带进度，已下载自动复用缓存)\n"
                 "  /jm id1,id2,id3             批量下载多本\n"
                 "  /jmpdf <漫画id>             下载并发PDF\n"
                 "  /jmphoto <章节id>           下载单个章节\n"
@@ -785,7 +785,7 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━\n"
                 "⭐ 账号：\n"
                 "  /jmcheckin                  每日签到领金币经验\n"
-                "  /jmme                       用户信息面板\n"
+                "  /jmme                       用户信息面板(签到/收藏/进度)\n"
                 "  /jmfav                      收藏夹文件夹列表\n"
                 "  /jmfav <文件夹id>           查看指定收藏夹\n"
                 "  /jmfav add <漫画id>         添加收藏\n"
@@ -801,8 +801,11 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
+                "💾 下载缓存：JM{漫画id}_{标题}，默认保留 {cache_days} 天\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
-                "📦 需 jmcomic 2.7.6+，签到/删除收藏需 2.7.9+".format(client_type=self.client_type.upper())
+                "📦 需 jmcomic 2.7.6+，签到/删除收藏需 2.7.9+".format(
+                    client_type=self.client_type.upper(), cache_days=self.cache_days
+                )
             )
             yield event.plain_result(help_text)
             return
