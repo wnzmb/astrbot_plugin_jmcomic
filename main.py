@@ -4,7 +4,9 @@ import zipfile
 import shutil
 import math
 import json
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,8 @@ class ProgressDownloader(JmAsyncDownloader):
     """
     # key: album_id, value: {'total': int, 'done': int, 'finished': bool}
     _progress = {}
+    # key: album_id, value: 本次下载实际写入的漫画根目录（不依赖 dir_rule 命名）
+    _album_dirs = {}
 
     async def before_album(self, album):
         await super().before_album(album)
@@ -53,6 +57,12 @@ class ProgressDownloader(JmAsyncDownloader):
             album_id = str(image.from_photo.album_id)
             if album_id in ProgressDownloader._progress:
                 ProgressDownloader._progress[album_id]['done'] += 1
+
+            # 记录实际保存目录：取 base_dir 下的第一层目录，无论 dir_rule 怎么配都能定位
+            base_dir = Path(self.option.dir_rule.base_dir).resolve()
+            rel_path = Path(img_save_path).resolve().relative_to(base_dir)
+            if rel_path.parts:
+                ProgressDownloader._album_dirs[album_id] = str(base_dir / rel_path.parts[0])
         except Exception:
             pass
 
@@ -63,7 +73,7 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.6.1")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.6.2")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -183,6 +193,9 @@ class JmComicPlugin(Star):
                 }
             },
             "dir_rule": {
+                # 目录名带漫画ID：JM{id}_{标题}/章节名，便于按ID精确查找缓存
+                # 默认规则 Bd_Pname 只有标题，会导致下载完成后无法按ID定位目录
+                "rule": "Bd/JM{Aid}_{Atitle}/Pname",
                 "normalize_zh": "zh-cn"
             },
             "plugins": {
@@ -220,12 +233,15 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.6.0，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.6.2，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
         if not self.history_file.exists():
             self.history_file.write_text("{}", encoding="utf-8")
+
+        # 最近一次成功签到的本地记录（API 签到日历更新有延迟时兜底）
+        self.checkin_file = self.data_dir / "checkin_state.json"
 
     def _check_permission(self, event: AstrMessageEvent):
         """检查群聊权限"""
@@ -303,15 +319,43 @@ class JmComicPlugin(Star):
         except:
             return text
 
+    def _album_dir_has_images(self, folder: Path) -> bool:
+        """判断目录里是否真的有图片（避免把空目录/半成品当作已下载）"""
+        try:
+            for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.gif"):
+                for _ in folder.rglob(pattern):
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _find_album_dir(self, album_id):
-        """按ID查找已下载的漫画目录，不依赖album.save_path（该字段在jmcomic 2.7.9中可能返回基础目录）
+        """按ID查找已下载的漫画目录。
+        优先使用下载过程中记录的真实目录，其次按目录名前缀匹配，
+        不再依赖 album.save_path（jmcomic 2.7.9 默认 dir_rule 会返回基础目录）。
         返回 Path 或 None
         """
-        for d in self.download_base_dir.glob(f"JM{album_id}_*"):
-            if d.is_dir():
-                # 安全检查：确保不是基础下载目录本身
-                if d.resolve() != self.download_base_dir.resolve():
-                    return d
+        album_id = str(album_id).strip()
+        base_resolved = self.download_base_dir.resolve()
+
+        # 1) 下载钩子记录的目录最准确
+        recorded = ProgressDownloader._album_dirs.get(album_id)
+        if recorded:
+            folder = Path(recorded)
+            if folder.is_dir() and self._album_dir_has_images(folder):
+                return folder
+
+        # 2) 按 JM{id}_ 前缀匹配（当前 dir_rule 生成的目录名）
+        candidates = []
+        for folder in self.download_base_dir.glob(f"JM{album_id}_*"):
+            if folder.is_dir() and folder.resolve() != base_resolved:
+                candidates.append(folder)
+        if candidates:
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            for folder in candidates:
+                if self._album_dir_has_images(folder):
+                    return folder
+
         return None
 
     def _load_history(self):
@@ -409,10 +453,19 @@ class JmComicPlugin(Star):
 
                 if album_dir is None:
                     failed_ids.append(album_id)
+                    yield event.plain_result(f"❌ [{idx+1}/{len(id_list)}] JM{album_id} 下载后仍找不到目录")
                     continue
 
+                # 目录名形如 JM{id}_{标题}，取出标题用于压缩包名/历史记录
+                album_title = album_dir.name
+                dir_prefix = f"JM{album_id}_"
+                if album_title.startswith(dir_prefix):
+                    album_title = album_title[len(dir_prefix):]
+                if not album_title:
+                    album_title = str(album_id)
+
                 # 打包ZIP
-                zip_name = f"JM{album_id}_{album_dir.name.replace(f'JM{album_id}_', '')[:30]}.zip"
+                zip_name = f"JM{album_id}_{album_title[:30]}.zip"
                 for ch in r'\/:*?"<>|':
                     zip_name = zip_name.replace(ch, '_')
                 zip_path = self.zip_base_dir / zip_name
@@ -431,7 +484,7 @@ class JmComicPlugin(Star):
                 user_id = event.get_sender_id()
                 self._add_user_history(user_id, {
                     "id": album_id,
-                    "title": album_dir.name,
+                    "title": album_title,
                     "time": time.strftime("%Y-%m-%d %H:%M"),
                     "size_mb": round(size_mb, 1)
                 })
@@ -709,7 +762,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.6.0\n"
+                "📖 漫画站插件 帮助 v0.6.2\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -763,9 +816,8 @@ class JmComicPlugin(Star):
             return
 
         # 先找downloads里有没有已经下载好的漫画
-        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
-        if existing_album_dirs and existing_album_dirs[0].is_dir():
-            album_dir = existing_album_dirs[0]
+        album_dir = self._find_album_dir(album_id)
+        if album_dir is not None:
             yield event.plain_result(f"📦 找到已下载的文件，直接打包发送...")
             zip_name = f"{album_dir.name}.zip"
             zip_path = self.zip_base_dir / zip_name
@@ -1023,9 +1075,8 @@ class JmComicPlugin(Star):
         album_id = args[1]
 
         # 先找downloads里有没有已经下载好的漫画
-        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
-        if existing_album_dirs and existing_album_dirs[0].is_dir():
-            album_dir = existing_album_dirs[0]
+        album_dir = self._find_album_dir(album_id)
+        if album_dir is not None:
             image_files = sorted([f for f in album_dir.rglob("*.jpg")] + [f for f in album_dir.rglob("*.png")])
             if image_files:
                 yield event.plain_result(f"📄 找到已下载的文件，直接生成PDF...")
@@ -1306,7 +1357,135 @@ class JmComicPlugin(Star):
         except Exception as e:
             yield event.plain_result(self._handle_jm_exception(e, "生成长图"))
 
+    def _load_checkin_state(self):
+        """读取本地签到记录（用于接口数据延迟时兜底）"""
+        try:
+            data = json.loads(self.checkin_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_checkin_state(self, streak=None, signed_count=None):
+        """记录本次签到日期/连续天数，第二天自动失效"""
+        state = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'streak': streak,
+            'signed_count': signed_count,
+        }
+        try:
+            self.checkin_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"保存签到状态失败: {e}")
+
     # ========== /jmcheckin 每日签到 ==========
+    @staticmethod
+    def _parse_record_day(value):
+        """把签到记录里的日期（"01" / 1 / "2026-10-01"）统一成几号"""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if 1 <= value <= 31 else None
+        text = str(value).strip()
+        if not text:
+            return None
+        if '-' in text or '/' in text:
+            text = re.split(r'[-/]', text)[-1]
+        digits = re.sub(r'\D', '', text)
+        if not digits:
+            return None
+        day = int(digits)
+        return day if 1 <= day <= 31 else None
+
+    @staticmethod
+    def _daily_payload(daily):
+        """取出签到接口的字典数据，兼容 API（model_data）与 HTML（json()）"""
+        try:
+            if hasattr(daily, 'model_data'):
+                data = daily.model_data
+            elif hasattr(daily, 'json'):
+                data = daily.json()
+            else:
+                data = None
+        except Exception:
+            data = None
+        return data if isinstance(data, dict) else {}
+
+    def _parse_daily_info(self, daily, assume_today_signed=False):
+        """解析签到信息。
+        HTML 客户端有 oldStep / error 字段，API 客户端没有，
+        连续天数只能从 record 签到日历里按日期往前逐日统计。
+        """
+        data = self._daily_payload(daily)
+        info = {
+            'streak': None,
+            'today_signed': False,
+            'signed_count': None,
+            'signed_days': set(),
+            'progress': None,
+        }
+        if not data:
+            return info
+
+        progress = data.get('currentProgress') or data.get('current_progress')
+        if progress is not None:
+            info['progress'] = str(progress)
+
+        # HTML 客户端直接给连续天数
+        for key in ('oldStep', 'old_step', 'continuous', 'continuous_days', 'streak'):
+            value = data.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                info['streak'] = int(value)
+                break
+            if isinstance(value, str) and value.strip().isdigit():
+                info['streak'] = int(value.strip())
+                break
+
+        # 今日是否已签
+        if data.get('error') == 'finished' or data.get('today_signed') is True:
+            info['today_signed'] = True
+
+        # 签到日历：API 是 record 二维数组，HTML 是 dateArray
+        record = data.get('record')
+        if isinstance(record, dict):
+            record = list(record.values())
+        if isinstance(record, list):
+            for week in record:
+                days = week if isinstance(week, list) else [week]
+                for day in days:
+                    if not isinstance(day, dict) or not day.get('signed'):
+                        continue
+                    day_num = self._parse_record_day(day.get('date'))
+                    if day_num is not None:
+                        info['signed_days'].add(day_num)
+        elif isinstance(data.get('dateArray'), list):
+            for value in data['dateArray']:
+                day_num = self._parse_record_day(value)
+                if day_num is not None:
+                    info['signed_days'].add(day_num)
+
+        if info['signed_days']:
+            info['signed_count'] = len(info['signed_days'])
+            if datetime.now().day in info['signed_days']:
+                info['today_signed'] = True
+
+        if assume_today_signed:
+            info['today_signed'] = True
+            info['signed_days'].add(datetime.now().day)
+
+        # 连续天数兜底：从今天（今天没签则从昨天）往前逐日数
+        if info['streak'] is None and info['signed_days']:
+            today = datetime.now().day
+            cursor = today if today in info['signed_days'] else today - 1
+            streak = 0
+            while cursor >= 1 and cursor in info['signed_days']:
+                streak += 1
+                cursor -= 1
+            info['streak'] = streak
+
+        return info
+
     @filter.command("jmcheckin")
     async def jm_checkin(self, event: AstrMessageEvent):
         """每日签到领金币经验，用法：/jmcheckin"""
@@ -1326,40 +1505,19 @@ class JmComicPlugin(Star):
             # 先获取签到信息
             yield event.plain_result("📅 正在获取签到信息...")
             daily = await asyncio.to_thread(client.get_daily)
-
-            # 解析签到信息
-            signed_dates = []
-            old_step = 0
-            today_signed = False
-            try:
-                # API 客户端返回 model_data
-                if hasattr(daily, 'model_data'):
-                    data = daily.model_data
-                    old_step = data.get('oldStep', 0) or 0
-                    today_signed = data.get('error') == 'finished'
-                    # record 是按周划分的签到矩阵
-                    record = data.get('record', [])
-                    for week in record:
-                        for day in week:
-                            if day.get('signed'):
-                                signed_dates.append(day.get('date'))
-                elif hasattr(daily, 'json'):
-                    # HTML 客户端返回 json
-                    data = daily.json()
-                    old_step = data.get('oldStep', 0) or 0
-                    today_signed = data.get('error') == 'finished'
-                    signed_dates = data.get('dateArray', [])
-            except Exception:
-                pass
+            info = self._parse_daily_info(daily)
 
             # 执行签到
             yield event.plain_result("✅ 正在签到...")
+            signed_ok = False
             try:
                 resp = await asyncio.to_thread(client.daily_checkin)
                 if resp.code == 0:
                     result_msg = f"🎉 签到成功！\n{resp.msg}"
+                    signed_ok = True
                 elif resp.code == 1:
                     result_msg = f"📌 今日已签到\n{resp.msg}"
+                    signed_ok = True
                 else:
                     result_msg = f"签到结果：{resp.msg}"
             except Exception as checkin_err:
@@ -1367,13 +1525,34 @@ class JmComicPlugin(Star):
                 err_str = str(checkin_err)
                 if any(kw in err_str for kw in ('已签', '签到过', '已经签', '今日已')):
                     result_msg = f"📌 今日已签到\n{err_str.replace('签到失败：', '')}"
+                    signed_ok = True
                 else:
                     raise
 
+            # 签到后重新拉取状态：API 客户端的连续天数要从 record 日历反推
+            if signed_ok:
+                try:
+                    daily_after = await asyncio.to_thread(client.get_daily)
+                    final_info = self._parse_daily_info(daily_after, assume_today_signed=True)
+                except Exception:
+                    final_info = self._parse_daily_info(daily, assume_today_signed=True)
+            else:
+                final_info = info
+
+            if final_info.get('signed_count') is None:
+                final_info['signed_count'] = info.get('signed_count')
+            if final_info.get('streak') is None:
+                final_info['streak'] = info.get('streak')
+
+            if signed_ok:
+                self._save_checkin_state(final_info.get('streak'), final_info.get('signed_count'))
+
+            streak_text = f"{final_info['streak']} 天" if final_info.get('streak') is not None else "获取失败"
             reply = f"📅 每日签到\n\n{result_msg}\n\n"
-            reply += f"🔥 连续签到：{old_step} 天\n"
-            reply += f"📆 本月已签：{len(signed_dates)} 天"
-            if today_signed or '已签' in result_msg:
+            reply += f"🔥 连续签到：{streak_text}\n"
+            if final_info.get('signed_count') is not None:
+                reply += f"📆 本月已签：{final_info['signed_count']} 天"
+            if final_info.get('today_signed'):
                 reply += "\n\n✅ 今日已完成签到"
 
             yield event.plain_result(reply)
@@ -1403,27 +1582,22 @@ class JmComicPlugin(Star):
                 return
 
             # 获取签到信息（jmcomic 2.7.5+ 才支持）
-            old_step = 0
-            today_signed = False
+            info = {}
             if hasattr(client, 'get_daily'):
                 try:
                     daily = await asyncio.to_thread(client.get_daily)
-                    if hasattr(daily, 'model_data'):
-                        data = daily.model_data
-                        # 连续签到天数：尝试多种字段名
-                        old_step = data.get('oldStep', data.get('old_step', data.get('continuous', 0))) or 0
-                        # 今日是否已签：error=='finished' 或 record 中有今日记录
-                        today_signed = data.get('error') == 'finished'
-                        if not today_signed:
-                            # 从签到记录推断今日是否已签
-                            record = data.get('record', [])
-                            for week in record:
-                                for day in week:
-                                    if day.get('signed') and day.get('is_today'):
-                                        today_signed = True
-                                        break
+                    info = self._parse_daily_info(daily)
                 except Exception:
-                    pass
+                    info = {}
+
+                # 接口日历更新延迟时，用本机今天成功签到的记录兜底
+                state = self._load_checkin_state()
+                if state.get('date') == datetime.now().strftime('%Y-%m-%d'):
+                    info['today_signed'] = True
+                    if info.get('streak') is None and state.get('streak') is not None:
+                        info['streak'] = state.get('streak')
+                    if info.get('signed_count') is None and state.get('signed_count') is not None:
+                        info['signed_count'] = state.get('signed_count')
 
             # 获取收藏数（通过收藏夹第一页）
             fav_count = "未知"
@@ -1438,8 +1612,12 @@ class JmComicPlugin(Star):
             reply = f"👤 用户面板\n\n"
             reply += f"📛 用户名：{username}\n"
             if hasattr(client, 'get_daily'):
-                reply += f"🔥 连续签到：{old_step} 天\n"
-                reply += f"📅 今日签到：{'✅ 已签' if today_signed else '❌ 未签'}\n"
+                streak = info.get('streak')
+                streak_text = f"{streak} 天" if streak is not None else "获取失败"
+                reply += f"🔥 连续签到：{streak_text}\n"
+                reply += f"📅 今日签到：{'✅ 已签' if info.get('today_signed') else '❌ 未签'}\n"
+                if info.get('progress'):
+                    reply += f"📈 活动进度：{info['progress']}\n"
             reply += f"⭐ 收藏数量：{fav_count}\n"
             if hasattr(client, 'daily_checkin'):
                 reply += f"\n💡 /jmcheckin 立即签到"
@@ -1582,9 +1760,31 @@ class JmComicPlugin(Star):
 
             page = await asyncio.to_thread(client.album_pagination, album_id, page=page_num)
 
+            # 先拿到总页数并缓存（API 的 page_count 由 total 计算，最多500页）
+            total = getattr(page, 'total', None)
+            page_count = getattr(page, 'page_count', None)
+            if page_count:
+                if not hasattr(self, '_comment_page_cache'):
+                    self._comment_page_cache = {}
+                self._comment_page_cache[comment_cache_key] = page_count
+
+            # 请求页码超过总页数时，上游会重复返回第一页内容，这里直接拦截
+            if page_count is not None and page_num > page_count:
+                yield event.plain_result(
+                    f"⚠️ JM{album_id} 评论共 {page_count} 页，已到最后一页\n"
+                    f"🔙 回到第1页：/jmc {album_id} 1"
+                )
+                return
+
             comments = list(page)
             if not comments:
-                yield event.plain_result("还没有评论")
+                if page_num > 1:
+                    yield event.plain_result(
+                        f"⚠️ 第{page_num}页没有评论，已经到最后一页了\n"
+                        f"🔙 上一页：/jmc {album_id} {page_num - 1}"
+                    )
+                else:
+                    yield event.plain_result("还没有评论")
                 return
 
             def format_comment(comment, indent=0):
@@ -1617,14 +1817,7 @@ class JmComicPlugin(Star):
                 results.append(f"{i+1}.")
                 results.extend(format_comment(comment, indent=1))
 
-            # 分页信息
-            total = getattr(page, 'total', None)
-            page_count = getattr(page, 'page_count', None)
-            # 缓存总页数，用于超页检测
-            if page_count:
-                if not hasattr(self, '_comment_page_cache'):
-                    self._comment_page_cache = {}
-                self._comment_page_cache[f"comment_pages_{album_id}"] = page_count
+            # 分页信息（total/page_count 已在上方获取并缓存）
             header = f"💬 JM{album_id} 评论（第{page_num}页"
             if total is not None:
                 header += f"，共{total}条"
