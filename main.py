@@ -1291,10 +1291,12 @@ class JmComicPlugin(Star):
             client = self._new_logged_client()
 
             # jmcomic 2.7.5 及以下版本不支持签到接口
+            jm_version = getattr(jmcomic, '__version__', '未知')
             if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
                 yield event.plain_result(
-                    "⚠️ 当前 jmcomic 版本不支持每日签到功能\n"
-                    "请升级 jmcomic 到最新版本：pip install -U jmcomic"
+                    f"⚠️ 当前 jmcomic 版本（{jm_version}）不支持每日签到功能\n"
+                    f"需要 jmcomic >= 2.7.6，请升级后重启 AstrBot：\n"
+                    f"  D:\\Program Files\\AstrBot\\backend\\python\\python.exe -m pip install -U jmcomic"
                 )
                 return
 
