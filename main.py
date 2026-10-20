@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
 import astrbot.api.message_components as Comp
@@ -73,7 +73,7 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.6.3")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.6.4")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -220,7 +220,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.6.3，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.6.4，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -425,6 +425,72 @@ class JmComicPlugin(Star):
             name = name.replace(ch, '_')
         return name.strip()[:max_len] or 'untitled'
 
+    # ========== QQ 消息违规检测 ==========
+    def _backend_log_path(self):
+        """定位 AstrBot 的 backend.log，用于检测平台静默拦截"""
+        candidates = []
+        try:
+            # .../.astrbot/data/plugin_data/<plugin> -> .../.astrbot/logs/backend.log
+            candidates.append(self.data_dir.parents[2] / "logs" / "backend.log")
+            candidates.append(self.data_dir.parents[1] / "logs" / "backend.log")
+        except Exception:
+            pass
+        candidates.append(Path("logs") / "backend.log")
+        for path in candidates:
+            try:
+                if path.exists():
+                    return path
+            except Exception:
+                continue
+        return None
+
+    def _log_pos(self):
+        path = self._backend_log_path()
+        if path is None:
+            return 0
+        try:
+            return path.stat().st_size
+        except Exception:
+            return 0
+
+    def _log_has_violation(self, offset):
+        """从 offset 开始读日志，检测“消息内容违规”类错误"""
+        path = self._backend_log_path()
+        if path is None:
+            return False
+        try:
+            size = path.stat().st_size
+            if offset <= 0 or offset > size:
+                offset = max(0, size - 65536)
+            with path.open("r", encoding="utf-8", errors="ignore") as f:
+                f.seek(offset)
+                text = f.read()
+        except Exception:
+            return False
+        return any(k in text for k in ("消息内容违规", "内容违规", "40034006"))
+
+    @staticmethod
+    def _is_violation_error(err):
+        """递归检查发送异常及 tenacity 重试原因里是否包含违规关键词"""
+        texts = []
+        cur = err
+        for _ in range(6):
+            if cur is None:
+                break
+            try:
+                texts.append(str(cur))
+            except Exception:
+                pass
+            last_attempt = getattr(cur, "last_attempt", None)
+            if last_attempt is not None:
+                try:
+                    texts.append(str(last_attempt.exception()))
+                except Exception:
+                    pass
+            cur = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        text = " ".join(texts)
+        return any(k in text for k in ("消息内容违规", "内容违规", "40034006"))
+
     # ========== 工具方法 ==========
 
     def _zip_folder(self, folder_path: Path, zip_path: Path):
@@ -628,6 +694,7 @@ class JmComicPlugin(Star):
           -tag     去掉标签
           -desc    去掉简介
           -related 去掉相关推荐
+          -pic     不发送封面
         示例：/jmv 123456 -role -work
         """
         if not self._check_permission(event):
@@ -638,7 +705,7 @@ class JmComicPlugin(Star):
             yield event.plain_result(
                 "用法：/jmv <漫画id> [选项]\n"
                 "选项：-author 去掉作者 | -work 去掉原作 | -role 去掉角色 | -tag 去掉标签\n"
-                "      -desc 去掉简介 | -related 去掉相关推荐\n"
+                "      -desc 去掉简介 | -related 去掉相关推荐 | -pic 不发送封面\n"
                 "示例：/jmv 350234 或 /jmv 350234 -role -work"
             )
             return
@@ -744,28 +811,127 @@ class JmComicPlugin(Star):
                     lines.append(f"  {i+1}. [JM{photo.photo_id}] {photo_title[:40]}")
                 if len(chapters) > 10:
                     lines.append(f"  ... 共{len(chapters)}章，仅显示前10章")
-                lines.append(f"\n💡 /jmphoto <章节id> 下载单章，/jm {album_id} 下载全本")
+                lines.append(f"\n💡 /jmphoto <章节id> 下载单章，/jmlist {album_id} 查看全部章节，/jm {album_id} 下载全本")
             else:
                 lines.append(f"\n发 /jm {album_id} 下载")
 
             reply = "\n".join(lines)
             yield event.plain_result(reply)
 
-            # 下载封面并发送
-            cover_path = self.data_dir / f"cover_{album_id}.jpg"
-            try:
-                await asyncio.to_thread(client.download_album_cover, album_id, str(cover_path))
-                if cover_path.exists():
-                    yield event.chain_result([
-                        Comp.Image(file=str(cover_path))
-                    ])
-                    # 发完就删，不存着
-                    cover_path.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning(f"封面下载失败: {e}")
+            # 下载封面并发送；-pic 不发送封面
+            if '-pic' not in options:
+                cover_path = self.data_dir / f"cover_{album_id}.jpg"
+                try:
+                    await asyncio.to_thread(client.download_album_cover, album_id, str(cover_path))
+                    if cover_path.exists():
+                        yield event.chain_result([
+                            Comp.Image(file=str(cover_path))
+                        ])
+                        # 发完就删，不存着
+                        cover_path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.warning(f"封面下载失败: {e}")
 
         except Exception as e:
             yield event.plain_result(self._handle_jm_exception(e, "查询"))
+
+    # ========== /jmlist 章节列表 ==========
+    @filter.command("jmlist")
+    async def jm_chapter_list(self, event: AstrMessageEvent):
+        """查看漫画章节列表，用法：/jmlist <漫画id> [页码]
+        只发送章节文本，不发送封面；封面请用 /jmv <漫画id> 查看
+        """
+        if not self._check_permission(event):
+            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            return
+
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result(
+                "用法：/jmlist <漫画id> [页码]\n"
+                "示例：/jmlist 123456\n"
+                "      /jmlist 123456 2     查看第2页章节"
+            )
+            return
+
+        album_id = self._extract_id(args[1]) or args[1]
+        page_num = 1
+        for token in args[2:]:
+            if token.isdigit():
+                page_num = max(1, int(token))
+
+        yield event.plain_result(f"📚 获取 JM{album_id} 的章节列表...")
+
+        try:
+            client = self._new_logged_client()
+            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            chapters = list(album) if hasattr(album, '__iter__') else []
+
+            if not chapters:
+                yield event.plain_result(
+                    f"⚠️ JM{album_id} 没有章节列表。\n"
+                    "如果这是章节ID，请用 /jmphoto <章节id> 下载；"
+                    "想看所属漫画可以用 /jmv <章节id> 试着查一下。"
+                )
+                return
+
+            page_size = 20
+            total_pages = max(1, math.ceil(len(chapters) / page_size))
+            if page_num > total_pages:
+                yield event.plain_result(
+                    f"⚠️ JM{album_id} 共 {len(chapters)} 章，只有 {total_pages} 页，"
+                    f"已到最后一页（/jmlist {album_id} {total_pages}）"
+                )
+                return
+
+            start = (page_num - 1) * page_size
+            page_items = chapters[start:start + page_size]
+            album_title = self._safe_text(album.name, self.convert_title)
+
+            lines = [
+                f"📚 {album_title}",
+                f"🆔 JM{album_id} | 共{len(chapters)}章 | 第{page_num}/{total_pages}页",
+                "━━━━━━━━━━━━━━━",
+            ]
+            for i, photo in enumerate(page_items):
+                index = start + i + 1
+                photo_title = self._safe_text(getattr(photo, 'name', ''), self.convert_title)
+                if not photo_title:
+                    photo_title = f"第{index}章"
+                lines.append(f"{index}. [JM{photo.photo_id}] {photo_title[:50]}")
+
+            if page_num < total_pages:
+                lines.append(f"\n下一页：/jmlist {album_id} {page_num + 1}")
+            lines.append(f"💡 下载单章：/jmphoto <章节id>；下载全本：/jm {album_id}")
+            text = "\n".join(lines)
+
+            # 直接发送，便于捕获 QQ 的“消息内容违规”异常；再用日志兜底检测静默拦截
+            mark = self._log_pos()
+            try:
+                await event.send(MessageChain(chain=[Comp.Plain(text)]))
+            except Exception as send_err:
+                violation = self._is_violation_error(send_err) or self._log_has_violation(mark)
+                if violation:
+                    yield event.plain_result(
+                        "⚠️ 章节列表被 QQ 判定为消息内容违规，已拦截。\n"
+                        "标题已做敏感词转拼音；可以换一页重试，或用 /jmv <漫画id> -pic 看详情。"
+                    )
+                else:
+                    logger.warning(f"jmlist 发送失败: {send_err}")
+                    yield event.plain_result(f"❌ 章节列表发送失败：{send_err}")
+                return
+
+            # 给平台发送/日志落盘留一点时间，再检查是否静默拦截
+            await asyncio.sleep(1.5)
+            if self._log_has_violation(mark):
+                yield event.plain_result(
+                    "⚠️ 日志检测到章节列表触发了“消息内容违规”，可能已被 QQ 拦截。\n"
+                    "可以换一页重试，标题已做敏感词转拼音。"
+                )
+                return
+
+        except Exception as e:
+            yield event.plain_result(self._handle_jm_exception(e, "获取章节列表"))
 
     # ========== /jm 下载并发ZIP ==========
     @filter.command("jm")
@@ -779,7 +945,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.6.3\n"
+                "📖 漫画站插件 帮助 v0.6.4\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -790,7 +956,8 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
                 "  /jmv <漫画id> [选项]       查详情(含章节列表/简介/相关推荐)\n"
-                "    选项：-author -work -role -tag -desc -related\n"
+                "    选项：-author -work -role -tag -desc -related -pic(不发封面)\n"
+                "  /jmlist <漫画id> [页码]    查看全部章节（纯文本，不发封面）\n"
                 "  /jmc <漫画id> [页码]        看评论(翻页/回复/剧透，超页自动提示)\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⬇️ 下载：\n"
