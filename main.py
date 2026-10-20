@@ -118,7 +118,7 @@ class JmComicPlugin(Star):
         self.daily_file_limit = max(1, int(self.config.get("daily_file_limit", 100)))
         self.hourly_file_limit = max(1, int(self.config.get("hourly_file_limit", 50)))
         self.send_interval = max(0.0, float(self.config.get("send_interval", 1.5)))
-        # 每 N 章合并一个 PDF；1=每章一个，默认 5 章合并
+        # 每 N 章合并一个 PDF/ZIP；1=每章一个，默认 5 章合并
         configured_group = int(self.config.get("pdf_group_size", 5) or 0)
         self.pdf_group_size = configured_group if configured_group >= 1 else 5
         self.pdf_group_size = min(50, self.pdf_group_size)
@@ -476,7 +476,7 @@ class JmComicPlugin(Star):
             return tags
         import re
         from pypinyin import lazy_pinyin
-        
+
         sensitive_map = {}
         # 合并用户自定义敏感词
         sensitive_map.update(self.custom_sensitive_map)
@@ -486,7 +486,7 @@ class JmComicPlugin(Star):
             for cn, pinyin in sensitive_map.items():
                 if cn in tag:
                     tag = tag.replace(cn, pinyin)
-            
+
             # 匹配 "X交" 和 "X乳"，只把这两个字转拼音
             def replace_jiao(match):
                 word = match.group(0)
@@ -494,10 +494,10 @@ class JmComicPlugin(Star):
             def replace_ru(match):
                 word = match.group(0)
                 return ''.join(lazy_pinyin(word))
-            
+
             tag = re.sub(r'.交', replace_jiao, tag)
             tag = re.sub(r'.乳', replace_ru, tag)
-            
+
             result.append(tag)
         return result
 
@@ -514,6 +514,37 @@ class JmComicPlugin(Star):
         if self.sensitive_filter:
             text = self._sanitize_tags([text])[0]
         return text
+
+    # 账号类命令不经过全局敏感词转换，避免把用户 ID/账号信息误处理
+    _ACCOUNT_COMMANDS = {"jmcheckin", "jmme", "jmfav", "jmwhoami"}
+
+    def _command_name(self, event):
+        try:
+            first = (getattr(event, "message_str", "") or "").strip().split()[0]
+            return first[1:] if first.startswith("/") else first
+        except Exception:
+            return ""
+
+    def _output_text(self, event, text):
+        """所有非账号类输出统一做繁简/敏感词处理"""
+        if self._command_name(event) in self._ACCOUNT_COMMANDS:
+            return text
+        return self._safe_text(text)
+
+    def _plain(self, event, text):
+        return event.plain_result(self._output_text(event, text))
+
+    def _chain(self, event, chain):
+        """处理 chain 中的文本组件，文件/图片组件保持原样"""
+        if self._command_name(event) in self._ACCOUNT_COMMANDS:
+            return event.chain_result(chain)
+        safe_chain = []
+        for component in chain:
+            if isinstance(component, Comp.Plain):
+                safe_chain.append(Comp.Plain(self._output_text(event, getattr(component, "text", ""))))
+            else:
+                safe_chain.append(component)
+        return event.chain_result(safe_chain)
 
     def _safe_filename(self, name, max_len=60):
         """生成安全的文件名：敏感词转拼音并去掉非法字符"""
@@ -602,7 +633,7 @@ class JmComicPlugin(Star):
 
     # ========== 下载核心：ID识别 / 章节选择 / PDF-ZIP / 限额 ==========
     def _parse_download_args(self, args):
-        """解析 /jm <目标> [-c 章节]；PDF 合并章数由后台配置 pdf_group_size 决定"""
+        """解析 /jm <目标> [-c 章节]；PDF/ZIP 合并章数由后台配置 pdf_group_size 决定"""
         target = args[1] if len(args) > 1 else ""
         chapter_expr = None
         index = 2
@@ -625,18 +656,13 @@ class JmComicPlugin(Star):
         target_id = self._extract_id(token) or token
         return prefix, str(target_id)
 
-    async def _resolve_target(self, client, token, prefer_photo=False):
-        """识别输入是漫画ID还是章节ID，并返回章节列表。
-        prefer_photo=True 时（/jmphoto）优先按章节ID解析，
-        避免单章漫画的漫画ID和章节ID相同时被误判成整本。
-        """
+    async def _resolve_target(self, client, token):
+        """识别输入是漫画ID还是章节ID，并返回章节列表。"""
         prefix, target_id = self._normalize_target(token)
         if not target_id.isdigit():
             raise ValueError(f"无效ID：{token}")
 
-        cache_key = f"{'pfirst:' if prefer_photo else ''}{prefix}:{target_id}" if prefix else (
-            f"pfirst:{target_id}" if prefer_photo else target_id
-        )
+        cache_key = f"{prefix}:{target_id}" if prefix else target_id
         kind = self._id_type_cache.get(cache_key)
         album_probe = None
         photo_probe = None
@@ -646,12 +672,6 @@ class JmComicPlugin(Star):
                 kind = "album"
             elif prefix == "p":
                 kind = "photo"
-            elif prefer_photo:
-                try:
-                    photo_probe = await asyncio.to_thread(client.get_photo_detail, target_id)
-                    kind = "photo"
-                except MissingAlbumPhotoException:
-                    kind = "album"
             else:
                 # 先按章节探测：章节所属漫画ID与输入不同，说明输入是章节。
                 # 首章ID可能与漫画ID相同，这种情况仍按漫画处理。
@@ -849,6 +869,19 @@ class JmComicPlugin(Star):
         self._zip_folder(chapter_dir, zip_path)
         return zip_path
 
+    def _build_chapters_zip(self, chapter_dirs, zip_path: Path):
+        """把多个章节按各自目录打包进一个 ZIP"""
+        if self._output_fresh(zip_path, chapter_dirs):
+            return zip_path
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for chapter_dir in chapter_dirs:
+                for image in self._chapter_images(chapter_dir):
+                    zipf.write(image, f"{chapter_dir.name}/{image.name}")
+        return zip_path
+
+    def _group_page_count(self, chapter_dirs):
+        return sum(len(self._chapter_images(folder)) for folder in chapter_dirs)
+
     def _chapter_file_stem(self, photo, index, folder=None, album_title=""):
         """单章文件：JM章节ID_漫画标题_章节标题"""
         title = self._safe_text(getattr(photo, "name", ""), self.convert_title) or ""
@@ -883,7 +916,7 @@ class JmComicPlugin(Star):
         if folder is not None:
             holder["dir"] = folder
             holder["duration"] = 0.0
-            yield event.plain_result(f"📦 JM{album_id} 已有缓存，跳过下载")
+            yield self._plain(event, f"📦 JM{album_id} 已有缓存，跳过下载")
             return
 
         ProgressDownloader._progress.pop(str(album_id), None)
@@ -898,14 +931,14 @@ class JmComicPlugin(Star):
                 pct = int(prog["done"] / prog["total"] * 100)
                 if pct != last_pct and pct < 100:
                     last_pct = pct
-                    yield event.plain_result(f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
+                    yield self._plain(event, f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
 
         result = task.result()
         folder = self._find_album_dir(album_id)
         holder["dir"] = folder
         holder["duration"] = float(getattr(result, "duration", 0) or 0)
         if folder is None:
-            yield event.plain_result("⚠️ 下载完成但找不到漫画目录")
+            yield self._plain(event, "⚠️ 下载完成但找不到漫画目录")
 
     async def _ensure_photo_downloaded(self, photo, album_dir=None):
         """确保单章已下载，返回 (目录, 耗时)"""
@@ -936,11 +969,11 @@ class JmComicPlugin(Star):
         return mapping.get(int(count), [])
 
     async def _run_download(self, event, target_str, output_format,
-                            chapter_expr=None, photo_only=False):
+                            chapter_expr=None):
         """统一下载入口：PDF/ZIP、单本/批量、漫画ID/章节ID、QQ文件限额"""
         raw_targets = [x.strip() for x in str(target_str).split(",") if x.strip()]
         if not raw_targets:
-            yield event.plain_result("❌ 未解析到有效ID")
+            yield self._plain(event, "❌ 未解析到有效ID")
             return
 
         targets = []
@@ -954,16 +987,15 @@ class JmComicPlugin(Star):
             targets.append((raw, prefix, target_id))
 
         if not targets:
-            yield event.plain_result("❌ 未解析到有效ID")
+            yield self._plain(event, "❌ 未解析到有效ID")
             return
 
         fmt_label = "PDF" if output_format == "pdf" else "ZIP"
-        yield event.plain_result(f"📦 共 {len(targets)} 个目标，输出格式：{fmt_label}")
 
         try:
             client = self._new_logged_client()
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "登录"))
+            yield self._plain(event, self._handle_jm_exception(e, "登录"))
             return
 
         success = 0
@@ -974,53 +1006,46 @@ class JmComicPlugin(Star):
 
         for target_index, (raw, prefix, target_id) in enumerate(targets):
             target_label = f"[{target_index + 1}/{len(targets)}] JM{target_id}"
+            yield self._plain(
+                event,
+                f"⬇️ 开始下载 JM{target_id}，📦 共 1 个目标，输出格式：{fmt_label}。",
+            )
             try:
-                target = await self._resolve_target(client, raw, prefer_photo=photo_only)
+                target = await self._resolve_target(client, raw)
             except Exception as e:
                 failed.append(raw)
-                yield event.plain_result(
+                yield self._plain(event,
                     f"❌ {target_label} 识别失败：{self._handle_jm_exception(e, '识别')}"
                 )
                 continue
 
             kind = target["kind"]
-            if photo_only and kind == "album":
-                failed.append(raw)
-                yield event.plain_result(
-                    f"⚠️ {target_label} 是漫画ID（共{len(target['chapters'])}章），"
-                    "/jmphoto 只接受章节ID。\n"
-                    f"查看章节：/jmlist {target_id}\n"
-                    f"下载整本：/jm {target_id}\n"
-                    f"下载指定章节：/jm {target_id} -c 章节序号"
-                )
-                continue
-
-            if kind == "photo" and not photo_only:
+            if kind == "photo":
                 album = target.get("album")
                 album_id = getattr(album, "album_id", "") if album is not None else ""
                 note = f"（所属漫画 JM{album_id}）" if album_id else ""
-                yield event.plain_result(f"ℹ️ {target_label} 是章节ID{note}，按单章处理")
+                yield self._plain(event, f"ℹ️ {target_label} 是章节ID{note}，按单章处理")
 
             chapters = target["chapters"]
             if not chapters:
                 failed.append(raw)
-                yield event.plain_result(f"⚠️ {target_label} 没有章节")
+                yield self._plain(event, f"⚠️ {target_label} 没有章节")
                 continue
 
             if kind == "album" and chapter_expr:
                 selected, invalid = self._select_chapters(chapters, chapter_expr)
                 if invalid:
-                    yield event.plain_result(f"⚠️ 忽略无效章节序号：{', '.join(invalid)}")
+                    yield self._plain(event, f"⚠️ 忽略无效章节序号：{', '.join(invalid)}")
                 if not selected:
                     failed.append(raw)
-                    yield event.plain_result(f"⚠️ {target_label} 没有选中任何章节")
+                    yield self._plain(event, f"⚠️ {target_label} 没有选中任何章节")
                     continue
             elif kind == "album":
                 selected = [(i + 1, ch) for i, ch in enumerate(chapters)]
             else:
                 selected = [(1, chapters[0])]
                 if chapter_expr:
-                    yield event.plain_result("ℹ️ 章节ID目标会忽略 -c 参数")
+                    yield self._plain(event, "ℹ️ 章节ID目标会忽略 -c 参数")
 
             album = target.get("album")
             album_id = str(
@@ -1029,7 +1054,6 @@ class JmComicPlugin(Star):
             )
             album_title = getattr(album, "name", "") if album is not None else ""
             album_dir = None
-            download_duration = 0.0
             # 选章/单章先找已有漫画目录，便于复用旧缓存（新版目录带 P{章节id}_ 前缀）
             if album_id and not (kind == "album" and not chapter_expr):
                 album_dir = self._find_album_dir(album_id)
@@ -1042,12 +1066,11 @@ class JmComicPlugin(Star):
                         yield message
                 except Exception as e:
                     failed.append(raw)
-                    yield event.plain_result(
+                    yield self._plain(event,
                         f"❌ {target_label} 下载失败：{self._handle_jm_exception(e, '下载')}"
                     )
                     continue
                 album_dir = holder.get("dir")
-                download_duration = holder.get("duration", 0.0)
                 if album_dir is None:
                     failed.append(raw)
                     continue
@@ -1055,22 +1078,19 @@ class JmComicPlugin(Star):
                 for position, (original_index, photo) in enumerate(selected):
                     if self._chapter_dir(photo, album_dir) is not None:
                         continue
-                    yield event.plain_result(
+                    yield self._plain(event,
                         f"⬇️ {target_label} 下载第{original_index}章"
                         f"（{position + 1}/{len(selected)}）..."
                     )
                     try:
                         await self._ensure_photo_downloaded(photo, album_dir)
                     except Exception as e:
-                        yield event.plain_result(
+                        yield self._plain(event,
                             f"❌ 第{original_index}章下载失败：{e}"
                         )
 
-            # 规划输出文件：PDF 统一按后台配置的合并章数，ZIP 每章一个
-            if output_format == "pdf":
-                groups = self._plan_groups(selected, self.pdf_group_size)
-            else:
-                groups = [[item] for item in selected]
+            # 规划输出文件：PDF/ZIP 都按后台配置的合并章数
+            groups = self._plan_groups(selected, self.pdf_group_size)
 
             target_sizes = []
             target_sent = 0
@@ -1084,21 +1104,18 @@ class JmComicPlugin(Star):
                 quota = self._file_quota()
                 if quota["hour_remaining"] <= 0 or quota["day_remaining"] <= 0:
                     message = self._quota_block_text(len(groups) - group_index)
-                    if photo_only:
-                        message += f"\n稍后重试：/jmphoto {target_id}"
-                    else:
-                        remaining_indexes = [
-                            item[0]
-                            for remaining_group in groups[group_index:]
-                            for item in remaining_group
-                        ]
-                        ranges = self._format_index_ranges(remaining_indexes)
-                        command = "/jm" if output_format == "pdf" else "/jmzip"
-                        if ranges:
-                            message += f"\n稍后继续：{command} {target_id} -c {ranges}"
-                    yield event.plain_result(message)
+                    remaining_indexes = [
+                        item[0]
+                        for remaining_group in groups[group_index:]
+                        for item in remaining_group
+                    ]
+                    ranges = self._format_index_ranges(remaining_indexes)
+                    command = "/jm" if output_format == "pdf" else "/jmzip"
+                    if ranges:
+                        message += f"\n稍后继续：{command} {target_id} -c {ranges}"
+                    yield self._plain(event, message)
                     if target_index + 1 < len(targets):
-                        yield event.plain_result(
+                        yield self._plain(event,
                             "未处理的目标：" + ", ".join(x[0] for x in targets[target_index + 1:])
                         )
                     quota_stopped = True
@@ -1119,39 +1136,43 @@ class JmComicPlugin(Star):
                         chapter_dirs.append(folder)
 
                 if not chapter_dirs:
-                    yield event.plain_result(f"⚠️ {target_label} 第{group[0][0]}章没有图片")
+                    yield self._plain(event, f"⚠️ {target_label} 第{group[0][0]}章没有图片")
                     continue
 
+                page_count = self._group_page_count(chapter_dirs)
+                yield self._plain(
+                    event, f"开始打包{output_format}，共 {page_count} 页，准备发送。"
+                )
+
                 try:
+                    if len(group) == 1:
+                        stem = self._chapter_file_stem(
+                            group[0][1], group[0][0], chapter_dirs[0], album_title
+                        )
+                    else:
+                        stem = self._group_file_stem(
+                            album_id, album_title, group[0][0], group[-1][0]
+                        )
+                    output_path = self.zip_base_dir / f"{stem}.{output_format}"
                     if output_format == "pdf":
-                        if len(group) == 1:
-                            stem = self._chapter_file_stem(
-                                group[0][1], group[0][0], chapter_dirs[0], album_title
-                            )
-                        else:
-                            stem = self._group_file_stem(
-                                album_id, album_title, group[0][0], group[-1][0]
-                            )
-                        output_path = self.zip_base_dir / f"{stem}.pdf"
                         built = await asyncio.to_thread(
                             self._build_pdf, chapter_dirs, output_path
                         )
-                    else:
-                        original_index, photo = group[0]
-                        stem = self._chapter_file_stem(
-                            photo, original_index, chapter_dirs[0], album_title
-                        )
-                        output_path = self.zip_base_dir / f"{stem}.zip"
+                    elif len(chapter_dirs) == 1:
                         built = await asyncio.to_thread(
                             self._build_chapter_zip, chapter_dirs[0], output_path
                         )
+                    else:
+                        built = await asyncio.to_thread(
+                            self._build_chapters_zip, chapter_dirs, output_path
+                        )
                 except Exception as e:
-                    yield event.plain_result(f"❌ 生成文件失败：{e}")
+                    yield self._plain(event, f"❌ 生成文件失败：{e}")
                     target_failed += len(group)
                     continue
 
                 if not built or not output_path.exists():
-                    yield event.plain_result("❌ 生成文件失败（没有可用图片）")
+                    yield self._plain(event, "❌ 生成文件失败（没有可用图片）")
                     target_failed += len(group)
                     continue
 
@@ -1160,7 +1181,7 @@ class JmComicPlugin(Star):
                 total_files += 1
                 target_sent += 1
                 total_bytes += output_path.stat().st_size
-                yield event.chain_result([
+                yield self._chain(event, [
                     Comp.Plain(f"📎 {output_path.name} ({size_mb:.1f}MB)\n"),
                     Comp.File(file=str(output_path), name=output_path.name),
                 ])
@@ -1180,7 +1201,7 @@ class JmComicPlugin(Star):
                     teases = self._tease_for_count(total_count)
                     if self.tease_enabled and teases:
                         import random
-                        yield event.plain_result(random.choice(teases))
+                        yield self._plain(event, random.choice(teases))
             if target_failed:
                 failed.append(f"{raw}(部分章节失败)" if target_sent else raw)
 
@@ -1188,13 +1209,13 @@ class JmComicPlugin(Star):
                 break
 
         if not quota_stopped:
-            yield event.plain_result(
+            yield self._plain(event,
                 f"📊 下载完成：成功 {success}/{len(targets)} 个目标，"
                 f"发送 {total_files} 个文件，总计 {total_bytes / 1024 / 1024:.1f}MB\n"
                 f"{self._quota_status_text()}"
             )
         if failed:
-            yield event.plain_result(f"⚠️ 失败目标：{', '.join(failed)}")
+            yield self._plain(event, f"⚠️ 失败目标：{', '.join(failed)}")
 
     def _parse_search_args(self, args):
         """
@@ -1220,7 +1241,7 @@ class JmComicPlugin(Star):
 
         return keyword, qq_page, order_by
 
-    async def _render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix=""):
+    async def _render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms"):
         """通用搜索结果渲染：分页 + 切片 + 输出"""
         PER_QQ_PAGE = self.per_page
         PER_WEB_PAGE = 80
@@ -1230,7 +1251,8 @@ class JmComicPlugin(Star):
         offset_in_web_page = (qq_page - 1) % QQ_PAGES_PER_WEB_PAGE * PER_QQ_PAGE
 
         order_name = self.order_map.get(order_by, order_by)
-        yield event.plain_result(f"🔍 {title_prefix}{keyword}（{order_name}，第{qq_page}页）...")
+        display_keyword = self._safe_text(keyword, self.convert_title)
+        yield self._plain(event, f"🔍 {title_prefix}{display_keyword}（{order_name}，第{qq_page}页）...")
 
         try:
             total = None
@@ -1269,9 +1291,9 @@ class JmComicPlugin(Star):
             if not page_items:
                 if total:
                     max_page = math.ceil(int(total) / PER_QQ_PAGE)
-                    yield event.plain_result(f"第{qq_page}页没有更多结果了（共{total}条，最多{max_page}页）")
+                    yield self._plain(event, f"第{qq_page}页没有更多结果了（共{total}条，最多{max_page}页）")
                 else:
-                    yield event.plain_result(f"第{qq_page}页没有更多结果了")
+                    yield self._plain(event, f"第{qq_page}页没有更多结果了")
                 return
 
             results = []
@@ -1283,23 +1305,25 @@ class JmComicPlugin(Star):
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{global_index}. [JM{aid}] {item_title}{tag_str}")
 
-            reply = f"{title_prefix}：{keyword}（{order_name}）\n"
+            reply = f"{title_prefix}：{display_keyword}（{order_name}）\n"
             range_text = f"第{qq_page}页，第{start+1}-{start+len(page_items)}条"
             if total is not None:
                 range_text += f"，共{total}条"
             reply += range_text + "\n\n" + "\n".join(results)
             reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
 
-            # 下一页提示
-            next_cmd = f"/jms {keyword} {qq_page + 1}"
+            # 下一页提示：保留当前搜索命令和排序参数。
+            # 关键词若会被敏感词转换，就不把原词写进命令，避免命令本身触发违规。
+            next_keyword = keyword if self._safe_text(keyword, self.convert_title) == keyword else "<关键词>"
+            next_cmd = f"/{command_name} {next_keyword} {qq_page + 1}"
             if order_by != JmMagicConstants.ORDER_BY_LATEST:
                 next_cmd += f" {order_by}"
             reply += f"\n下一页：{next_cmd}"
 
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "搜索"))
+            yield self._plain(event, self._handle_jm_exception(e, "搜索"))
 
     # ========== 工具：从消息里提取数字ID ==========
     def _extract_id(self, message_str: str) -> str:
@@ -1314,23 +1338,21 @@ class JmComicPlugin(Star):
         """查看漫画详情，用法：/jmv <id> [选项]
         选项：
           -author  去掉作者
-          -work    去掉原作
-          -role    去掉角色
+          -work    去掉作品
+          -role    去掉人物
           -tag     去掉标签
-          -desc    去掉简介
-          -related 去掉相关推荐
           -pic     不发送封面
         示例：/jmv 123456 -role -work
         """
         if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
             return
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result(
+            yield self._plain(event,
                 "用法：/jmv <漫画id> [选项]\n"
-                "选项：-author 去掉作者 | -work 去掉原作 | -role 去掉角色 | -tag 去掉标签\n"
-                "      -desc 去掉简介 | -related 去掉相关推荐 | -pic 不发送封面\n"
+                "选项：-author 去掉作者 | -work 去掉作品 | -role 去掉人物 | -tag 去掉标签\n"
+                "      -pic 不发送封面\n"
                 "示例：/jmv 350234 或 /jmv 350234 -role -work"
             )
             return
@@ -1338,7 +1360,18 @@ class JmComicPlugin(Star):
         album_id = args[1]
         options = set(args[2:])  # 后面的参数都是选项
 
-        yield event.plain_result(f"🔍 查询 JM{album_id} ...")
+        option_labels = []
+        for opt, label in (
+            ("-author", "不带作者"),
+            ("-work", "不带作品"),
+            ("-role", "不带角色"),
+            ("-tag", "不带标签"),
+            ("-pic", "不发封面"),
+        ):
+            if opt in options:
+                option_labels.append(label)
+        option_suffix = f"（{'、'.join(option_labels)}）" if option_labels else ""
+        yield self._plain(event, f"🔍 查询 JM{album_id} ...{option_suffix}")
 
         try:
             client = self._new_logged_client()
@@ -1351,97 +1384,65 @@ class JmComicPlugin(Star):
             tags = getattr(album, 'tags', [])
             page_count = getattr(album, 'page_count', 0) or 0
             comment_count = getattr(album, 'comment_count', 0) or 0
-            description = getattr(album, 'description', '') or ''
             pub_date = getattr(album, 'pub_date', '') or ''
             update_date = getattr(album, 'update_date', '') or ''
             likes = getattr(album, 'likes', '') or ''
             views = getattr(album, 'views', '') or ''
-            related_list = getattr(album, 'related_list', None) or []
 
             # API客户端 page_count 可能为0，从章节累加计算
             if page_count == 0 and chapters:
                 page_count = sum(len(getattr(p, 'page_arr', []) or []) for p in chapters)
 
+            def join_values(values, simplify):
+                if not values:
+                    return "无"
+                return ", ".join(self._safe_text(str(v), simplify) for v in values)
+
+            def display_date(value):
+                text = str(value or "").strip()
+                return "未知" if text in ("", "0", "None") else text
+
+            title = self._safe_text(getattr(album, 'name', ''), self.convert_title) or "未知"
+            author_str = join_values(authors, self.convert_author)
+            work_str = join_values(works, self.convert_title)
+            actor_str = join_values(actors, self.convert_tags)
+            tag_str = join_values(tags, self.convert_tags)
+
+            sep = "─" * 50
             lines = [
-                f"📖 {self._safe_text(album.name, self.convert_title)}",
-                f"🆔 JM{album_id}",
+                sep,
+                f"  📖 标题:  {title}",
+                f"  🆔 ID:    JM{album_id}",
             ]
-
             if '-author' not in options:
-                author_str = ', '.join(authors) if authors else '未知'
-                author_str = self._safe_text(author_str, self.convert_author)
-                lines.append(f"✍️ 作者：{author_str}")
-            if '-work' not in options:
-                work_str = ', '.join(works) if works else '无'
-                work_str = self._safe_text(work_str, self.convert_title)
-                lines.append(f"🎬 原作：{work_str}")
-            if '-role' not in options:
-                actor_str = ', '.join(actors[:3]) if actors else '无'
-                actor_str = self._safe_text(actor_str, self.convert_tags)
-                lines.append(f"👥 角色：{actor_str}")
-
+                lines.append(f"  ✍️ 作者:  {author_str}")
+            lines.append(sep)
+            lines.append(f"  📅 发布日期:  {display_date(pub_date)}")
+            lines.append(f"  📅 更新日期:  {display_date(update_date)}")
+            lines.append(f"  📄 总页数:    {page_count if page_count else '未知'}")
+            lines.append(f"  👀 观看:      {views or '未知'}")
+            lines.append(f"  ❤️ 点赞:      {likes or '未知'}")
+            lines.append(f"  💬 评论:      {comment_count if comment_count else '未知'}")
+            lines.append(sep)
             if '-tag' not in options:
-                tags = [self._safe_text(t, self.convert_tags) for t in tags]
-                if tags:
-                    lines.append(f"🏷️ 标签：{', '.join(tags)}")
-
-            # 简介
-            if description and '-desc' not in options:
-                desc = self._safe_text(description, self.convert_title)
-                desc = desc.replace('\n', ' ').strip()[:150]
-                if desc:
-                    lines.append(f"📝 简介：{desc}")
-
-            # 统计信息（API客户端update_date硬编码为'0'，过滤掉无效值）
-            stats = []
-            if likes:
-                stats.append(f"❤️ {likes}")
-            if views:
-                stats.append(f"👁️ {views}")
-            if page_count and page_count != 0:
-                stats.append(f"📄 {page_count}页")
-            if comment_count and comment_count != 0:
-                stats.append(f"💬 {comment_count}条")
-            if pub_date and pub_date not in ('0', '', None):
-                stats.append(f"📅 {pub_date}")
-            if stats:
-                lines.append(" | ".join(stats))
-
-            # 相关推荐（API客户端返回字典列表，含id/author/name/image）
-            if related_list and '-related' not in options:
-                lines.append("\n🔗 相关推荐：")
-                for i, rel in enumerate(related_list[:5]):
-                    if isinstance(rel, dict):
-                        rel_id = rel.get('id', '')
-                        rel_title = rel.get('name', '')
-                        rel_author = rel.get('author', '')
-                    elif isinstance(rel, (tuple, list)) and len(rel) >= 2:
-                        rel_id, rel_title = rel[0], rel[1]
-                        rel_author = ''
-                    else:
-                        rel_id, rel_title, rel_author = str(rel), str(rel), ''
-                    if self.convert_title:
-                        rel_title = self._to_simplified(rel_title)
-                        rel_author = self._to_simplified(rel_author)
-                    rel_title = self._safe_text(rel_title, False)
-                    rel_author = self._safe_text(rel_author, False)
-                    author_suffix = f"（{rel_author}）" if rel_author else ''
-                    lines.append(f"  {i+1}. [JM{rel_id}] {rel_title[:30]}{author_suffix}")
-
-            # 章节列表（最多显示10章，方便获取章节ID用于单章下载）
-            if chapters:
-                lines.append("\n📚 章节列表：")
-                for i, photo in enumerate(chapters[:10]):
-                    photo_title = self._safe_text(photo.name, self.convert_title)
-                    lines.append(f"  {i+1}. [JM{photo.photo_id}] {photo_title[:40]}")
-                if len(chapters) > 10:
-                    lines.append(f"  ... 共{len(chapters)}章，仅显示前10章")
-                lines.append(f"\n💡 /jmphoto <章节id> 下载单章，/jmlist {album_id} 查看全部章节，/jm {album_id} 下载全本")
-            else:
-                lines.append(f"\n发 /jm {album_id} 下载")
+                lines.append(f"  🏷️ 标签:  {tag_str}")
+            if '-role' not in options:
+                lines.append(f"  🎭 人物:  {actor_str}")
+            if '-work' not in options:
+                lines.append(f"  📚 作品:  {work_str}")
+            lines.append(sep)
+            lines.append(f"  📑 章节 ({len(chapters)}):")
+            for i, photo in enumerate(chapters[:10]):
+                photo_title = self._safe_text(getattr(photo, 'name', ''), self.convert_title) or f"第{i+1}章"
+                lines.append(f"     {photo_title[:50]}  (id: {photo.photo_id})")
+            if len(chapters) > 10:
+                lines.append(f"     ... 共{len(chapters)}章，仅显示前10章")
+            if not chapters:
+                lines.append("     暂无章节")
+            lines.append(sep)
 
             reply = "\n".join(lines)
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
             # 下载封面并发送；-pic 不发送封面
             if '-pic' not in options:
@@ -1449,7 +1450,7 @@ class JmComicPlugin(Star):
                 try:
                     await asyncio.to_thread(client.download_album_cover, album_id, str(cover_path))
                     if cover_path.exists():
-                        yield event.chain_result([
+                        yield self._chain(event, [
                             Comp.Image(file=str(cover_path))
                         ])
                         # 发完就删，不存着
@@ -1458,7 +1459,7 @@ class JmComicPlugin(Star):
                     logger.warning(f"封面下载失败: {e}")
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "查询"))
+            yield self._plain(event, self._handle_jm_exception(e, "查询"))
 
     # ========== /jmlist 章节列表 ==========
     @filter.command("jmlist")
@@ -1467,12 +1468,12 @@ class JmComicPlugin(Star):
         只发送章节文本，不发送封面；封面请用 /jmv <漫画id> 查看
         """
         if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
             return
 
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result(
+            yield self._plain(event,
                 "用法：/jmlist <漫画id> [页码]\n"
                 "示例：/jmlist 123456\n"
                 "      /jmlist 123456 2     查看第2页章节"
@@ -1485,7 +1486,7 @@ class JmComicPlugin(Star):
             if token.isdigit():
                 page_num = max(1, int(token))
 
-        yield event.plain_result(f"📚 获取 JM{album_id} 的章节列表...")
+        yield self._plain(event, f"📚 获取 JM{album_id} 的章节列表...")
 
         try:
             client = self._new_logged_client()
@@ -1493,9 +1494,9 @@ class JmComicPlugin(Star):
             chapters = list(album) if hasattr(album, '__iter__') else []
 
             if not chapters:
-                yield event.plain_result(
+                yield self._plain(event,
                     f"⚠️ JM{album_id} 没有章节列表。\n"
-                    "如果这是章节ID，请用 /jmphoto <章节id> 下载；"
+                    "如果这是章节ID，请用 /jm <章节id> 下载；"
                     "想看所属漫画可以用 /jmv <章节id> 试着查一下。"
                 )
                 return
@@ -1503,7 +1504,7 @@ class JmComicPlugin(Star):
             page_size = 20
             total_pages = max(1, math.ceil(len(chapters) / page_size))
             if page_num > total_pages:
-                yield event.plain_result(
+                yield self._plain(event,
                     f"⚠️ JM{album_id} 共 {len(chapters)} 章，只有 {total_pages} 页，"
                     f"已到最后一页（/jmlist {album_id} {total_pages}）"
                 )
@@ -1527,8 +1528,8 @@ class JmComicPlugin(Star):
 
             if page_num < total_pages:
                 lines.append(f"\n下一页：/jmlist {album_id} {page_num + 1}")
-            lines.append(f"💡 下载单章：/jmphoto <章节id>；下载全本：/jm {album_id}")
-            text = "\n".join(lines)
+            lines.append(f"💡 下载单章：/jm <章节id>；下载全本：/jm {album_id}")
+            text = self._output_text(event, "\n".join(lines))
 
             # 直接发送，便于捕获 QQ 的“消息内容违规”异常；再用日志兜底检测静默拦截
             mark = self._log_pos()
@@ -1537,33 +1538,33 @@ class JmComicPlugin(Star):
             except Exception as send_err:
                 violation = self._is_violation_error(send_err) or self._log_has_violation(mark)
                 if violation:
-                    yield event.plain_result(
+                    yield self._plain(event,
                         "⚠️ 章节列表被 QQ 判定为消息内容违规，已拦截。\n"
                         "标题已做敏感词转拼音；可以换一页重试，或用 /jmv <漫画id> -pic 看详情。"
                     )
                 else:
                     logger.warning(f"jmlist 发送失败: {send_err}")
-                    yield event.plain_result(f"❌ 章节列表发送失败：{send_err}")
+                    yield self._plain(event, f"❌ 章节列表发送失败：{send_err}")
                 return
 
             # 给平台发送/日志落盘留一点时间，再检查是否静默拦截
             await asyncio.sleep(1.5)
             if self._log_has_violation(mark):
-                yield event.plain_result(
+                yield self._plain(event,
                     "⚠️ 日志检测到章节列表触发了“消息内容违规”，可能已被 QQ 拦截。\n"
                     "可以换一页重试，标题已做敏感词转拼音。"
                 )
                 return
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "获取章节列表"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取章节列表"))
 
-    # ========== /jm 下载 PDF ==========
-    @filter.command("jm")
+    # ========== /jm 下载 PDF（/jmphoto 为兼容别名） ==========
+    @filter.command("jm", alias={"jmphoto"})
     async def jm_download(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 PDF，用法：/jm <id> [-c 章节]"""
         if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
             return
         args = event.message_str.split()
 
@@ -1580,8 +1581,8 @@ class JmComicPlugin(Star):
                 "  /jmw 原作名 [页码] [排序]   按原作搜索\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
-                "  /jmv <漫画id> [选项]       查详情(含章节列表/简介/相关推荐)\n"
-                "    选项：-author -work -role -tag -desc -related -pic(不发封面)\n"
+                "  /jmv <漫画id> [选项]       查详情(含章节列表/标签/人物)\n"
+                "    选项：-author -work -role -tag -pic(不发封面)\n"
                 "  /jmlist <漫画id> [页码]    查看全部章节（纯文本，不发封面）\n"
                 "  /jmc <漫画id> [页码]        看评论(翻页/回复/剧透，超页自动提示)\n"
                 "━━━━━━━━━━━━━━━\n"
@@ -1592,9 +1593,11 @@ class JmComicPlugin(Star):
                 "  /jm <id> -c 31              只下第31章\n"
                 "  /jm <id> -c 31-40           下第31到40章\n"
                 "  /jm <id> -c 31,35,40        下指定章节\n"
-                "  /jmzip <漫画id>             下载整本，每章一个ZIP\n"
-                "  /jmzip <章节id>             单章ZIP；支持 id1,id2 批量\n"
-                "  /jmphoto <章节id>           单章PDF；支持 id1,id2 批量\n"
+                "  /jmzip <漫画id>             下载整本，按后台配置合并ZIP（默认每5章）\n"
+                "  /jmzip <章节id>             自动识别为单章，发一个ZIP\n"
+                "  /jmzip id1,id2,id3          批量下载，支持漫画/章节ID混合\n"
+                "  /jmzip <id> -c 31-40        只下指定章节\n"
+                "  /jmphoto <id>               等同 /jm <id>（兼容旧命令）\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⭐ 账号（仅号主）：\n"
                 "  /jmcheckin                  每日签到领金币经验\n"
@@ -1616,7 +1619,7 @@ class JmComicPlugin(Star):
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
                 "💾 下载缓存：JM{{漫画id}}_{{标题}}，默认保留 {cache_days} 天\n"
-                "📄 PDF合并：每 {pdf_group_size} 章一个（配置页修改 pdf_group_size）\n"
+                "📄 PDF/ZIP合并：每 {pdf_group_size} 章一个（配置页修改 pdf_group_size）\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
                 "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）\n"
                 "⏳ QQ文件限额：每日100个、每小时50个（本插件自动计数并提示）".format(
@@ -1625,19 +1628,19 @@ class JmComicPlugin(Star):
                     pdf_group_size=self.pdf_group_size,
                 )
             )
-            yield event.plain_result(help_text)
+            yield self._plain(event, help_text)
             return
 
         target, chapter_expr = self._parse_download_args(args)
         if not target:
-            yield event.plain_result("用法：/jm <漫画id|章节id> [-c 章节]")
+            yield self._plain(event, "用法：/jm <漫画id|章节id> [-c 章节]")
             return
         if any(token in ("-g", "--group") for token in args[2:]):
-            yield event.plain_result(
-                "ℹ️ 命令中的 -g 已取消，PDF 合并章数请到插件配置 pdf_group_size 修改"
+            yield self._plain(event,
+                "ℹ️ 命令中的 -g 已取消，PDF/ZIP 合并章数请到插件配置 pdf_group_size 修改"
             )
         async for message in self._run_download(
-            event, target, "pdf", chapter_expr, photo_only=False
+            event, target, "pdf", chapter_expr
         ):
             yield message
     # ========== /jmrand 随机漫画 ==========
@@ -1650,9 +1653,9 @@ class JmComicPlugin(Star):
         tag_name = " ".join(args[1:]) if len(args) > 1 else None
 
         if tag_name:
-            yield event.plain_result(f"🎲 正在从「{tag_name}」标签随机抽一个...")
+            yield self._plain(event, f"🎲 正在从「{tag_name}」标签随机抽一个...")
         else:
-            yield event.plain_result("🎲 正在从日榜随机抽一个漫画...")
+            yield self._plain(event, "🎲 正在从日榜随机抽一个漫画...")
 
         try:
             import random
@@ -1667,7 +1670,7 @@ class JmComicPlugin(Star):
 
             items = list(page.iter_id_title_tag())
             if not items:
-                yield event.plain_result("没抽到，再试一次")
+                yield self._plain(event, "没抽到，再试一次")
                 return
 
             album_id, title, tags = random.choice(items)
@@ -1681,7 +1684,7 @@ class JmComicPlugin(Star):
             page_count = getattr(album, 'page_count', '?')
 
             tag_str = f"\n🏷️ {', '.join(safe_tags)}" if safe_tags else ""
-            yield event.plain_result(
+            yield self._plain(event,
                 f"🎲 抽到了！\n\n"
                 f"📖 {title}\n"
                 f"🆔 JM{album_id}"
@@ -1691,18 +1694,18 @@ class JmComicPlugin(Star):
             )
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "随机抽漫"))
+            yield self._plain(event, self._handle_jm_exception(e, "随机抽漫"))
 
     # ========== /jms 全站搜索 ==========
     @filter.command("jms")
     async def jm_search(self, event: AstrMessageEvent):
         """全站搜索，用法：/jms <关键词> [页码] [排序]"""
         if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
             return
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result(
+            yield self._plain(event,
                 "用法：\n"
                 "  /jms <关键词>\n"
                 "  /jms <关键词> 2\n"
@@ -1714,7 +1717,7 @@ class JmComicPlugin(Star):
         client = self._new_logged_client()
 
         async for result in self._render_search_page(
-            event, client, client.search_site, keyword, qq_page, order_by, "全站搜索"
+            event, client, client.search_site, keyword, qq_page, order_by, "全站搜索", "jms"
         ):
             yield result
 
@@ -1724,14 +1727,14 @@ class JmComicPlugin(Star):
         """按作者搜索，用法：/jma <作者名> [页码] [排序]"""
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jma <作者名>")
+            yield self._plain(event, "用法：/jma <作者名>")
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
         client = self._new_logged_client()
 
         async for result in self._render_search_page(
-            event, client, client.search_author, keyword, qq_page, order_by, "作者搜索"
+            event, client, client.search_author, keyword, qq_page, order_by, "作者搜索", "jma"
         ):
             yield result
 
@@ -1741,14 +1744,14 @@ class JmComicPlugin(Star):
         """按标签搜索，用法：/jmt <标签名> [页码] [排序]"""
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jmt <标签名>")
+            yield self._plain(event, "用法：/jmt <标签名>")
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
         client = self._new_logged_client()
 
         async for result in self._render_search_page(
-            event, client, client.search_tag, keyword, qq_page, order_by, "标签搜索"
+            event, client, client.search_tag, keyword, qq_page, order_by, "标签搜索", "jmt"
         ):
             yield result
 
@@ -1758,14 +1761,14 @@ class JmComicPlugin(Star):
         """按角色/演员搜索，用法：/jmr <角色名> [页码] [排序]"""
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jmr <角色名>")
+            yield self._plain(event, "用法：/jmr <角色名>")
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
         client = self._new_logged_client()
 
         async for result in self._render_search_page(
-            event, client, client.search_actor, keyword, qq_page, order_by, "角色搜索"
+            event, client, client.search_actor, keyword, qq_page, order_by, "角色搜索", "jmr"
         ):
             yield result
 
@@ -1775,14 +1778,14 @@ class JmComicPlugin(Star):
         """按原作搜索，用法：/jmw <原作名> [页码] [排序]"""
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jmw <原作名>")
+            yield self._plain(event, "用法：/jmw <原作名>")
             return
 
         keyword, qq_page, order_by = self._parse_search_args(args)
         client = self._new_logged_client()
 
         async for result in self._render_search_page(
-            event, client, client.search_work, keyword, qq_page, order_by, "原作搜索"
+            event, client, client.search_work, keyword, qq_page, order_by, "原作搜索", "jmw"
         ):
             yield result
 
@@ -1791,48 +1794,25 @@ class JmComicPlugin(Star):
     async def jm_download_zip(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 ZIP，用法：/jmzip <id> [-c 章节]"""
         if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
             return
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result(
+            yield self._plain(event,
                 "用法：/jmzip <漫画id|章节id> [-c 章节]\n"
                 "示例：/jmzip 123456\n"
                 "      /jmzip 123456 -c 31-40\n"
                 "      /jmzip 123,456\n"
-                "说明：多章漫画每章一个 ZIP；单章目标发一个 ZIP"
+                "说明：多章按后台配置合并 ZIP（默认每5章）；单章目标发一个 ZIP"
             )
             return
 
         target, chapter_expr = self._parse_download_args(args)
         if not target:
-            yield event.plain_result("用法：/jmzip <漫画id|章节id> [-c 章节]")
+            yield self._plain(event, "用法：/jmzip <漫画id|章节id> [-c 章节]")
             return
         async for message in self._run_download(
-            event, target, "zip", chapter_expr, photo_only=False
-        ):
-            yield message
-
-    # ========== /jmphoto 单章 PDF ==========
-    @filter.command("jmphoto")
-    async def jm_download_photo(self, event: AstrMessageEvent):
-        """下载章节并发送 PDF，用法：/jmphoto <章节id>[,章节id2...]"""
-        if not self._check_permission(event):
-            yield event.plain_result("本插件已关闭群聊使用，请私聊使用")
-            return
-        args = event.message_str.split()
-        if len(args) < 2:
-            yield event.plain_result(
-                "用法：/jmphoto <章节id>[,章节id2...]\n"
-                "示例：/jmphoto 1172866\n"
-                "      /jmphoto 1172866,1172867,1172868\n"
-                "章节ID可用 /jmlist <漫画id> 查看；每章发一个 PDF"
-            )
-            return
-
-        target = args[1]
-        async for message in self._run_download(
-            event, target, "pdf", None, photo_only=True
+            event, target, "zip", chapter_expr
         ):
             yield message
 
@@ -1854,6 +1834,40 @@ class JmComicPlugin(Star):
             return None
         day = int(digits)
         return day if 1 <= day <= 31 else None
+
+    def _load_checkin_state(self):
+        """读取本机签到状态，接口日历延迟时用于兜底"""
+        try:
+            if self.checkin_file.exists():
+                data = json.loads(self.checkin_file.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def _save_checkin_state(self, streak, signed_count=None):
+        """保存本机签到状态"""
+        try:
+            data = {
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "streak": int(streak or 0),
+            }
+            if signed_count is not None:
+                data["signed_count"] = signed_count
+            self.checkin_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            logger.warning(f"保存签到状态失败: {e}")
+
+    def _local_streak(self, today_signed):
+        """接口未返回连续天数时，用本机记录估算"""
+        state = self._load_checkin_state()
+        streak = int(state.get("streak", 0) or 0)
+        if today_signed:
+            return max(1, streak)
+        return max(0, streak)
 
     @staticmethod
     def _daily_payload(daily):
@@ -1958,7 +1972,7 @@ class JmComicPlugin(Star):
     async def jm_checkin(self, event: AstrMessageEvent):
         """每日签到领金币经验，用法：/jmcheckin"""
         if not self._is_owner(event):
-            yield event.plain_result(self._owner_required_text())
+            yield self._plain(event, self._owner_required_text())
             return
         try:
             client = self._new_logged_client()
@@ -1966,7 +1980,7 @@ class JmComicPlugin(Star):
             # jmcomic 2.7.5 及以下版本不支持签到接口
             jm_version = getattr(jmcomic, '__version__', '未知')
             if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
-                yield event.plain_result(
+                yield self._plain(event,
                     f"⚠️ 当前 jmcomic 版本（{jm_version}）不支持每日签到功能\n"
                     f"需要 jmcomic >= 2.7.7（推荐升级到 2.7.9），请升级后重启 AstrBot：\n"
                     f"  D:\\Program Files\\AstrBot\\backend\\python\\python.exe -m pip install -U jmcomic"
@@ -1974,12 +1988,12 @@ class JmComicPlugin(Star):
                 return
 
             # 先获取签到信息
-            yield event.plain_result("📅 正在获取签到信息...")
+            yield self._plain(event, "📅 正在获取签到信息...")
             daily = await asyncio.to_thread(client.get_daily)
             info = self._parse_daily_info(daily)
 
             # 执行签到
-            yield event.plain_result("✅ 正在签到...")
+            yield self._plain(event, "✅ 正在签到...")
             signed_ok = False
             try:
                 resp = await asyncio.to_thread(client.daily_checkin)
@@ -2031,17 +2045,17 @@ class JmComicPlugin(Star):
             if final_info.get('today_signed'):
                 reply += "\n\n✅ 今日已完成签到"
 
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "签到"))
+            yield self._plain(event, self._handle_jm_exception(e, "签到"))
 
     # ========== /jmme 用户面板 ==========
     @filter.command("jmme")
     async def jm_user_info(self, event: AstrMessageEvent):
         """查看用户信息面板，用法：/jmme"""
         if not self._is_owner(event):
-            yield event.plain_result(self._owner_required_text())
+            yield self._plain(event, self._owner_required_text())
             return
         try:
             client = self._new_logged_client()
@@ -2057,7 +2071,7 @@ class JmComicPlugin(Star):
                 pass
 
             if not username:
-                yield event.plain_result("⚠️ 未配置登录账号，请在插件配置中填写账号密码")
+                yield self._plain(event, "⚠️ 未配置登录账号，请在插件配置中填写账号密码")
                 return
 
             # 获取签到信息（jmcomic 2.7.5+ 才支持）
@@ -2104,10 +2118,10 @@ class JmComicPlugin(Star):
             else:
                 reply += f"\n💡 签到功能需升级 jmcomic 到最新版本"
 
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "获取用户信息"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取用户信息"))
 
     # ========== /jmrank 排行榜 ==========
     @filter.command("jmrank")
@@ -2115,7 +2129,7 @@ class JmComicPlugin(Star):
         """排行榜，用法：/jmrank day|week|month [页码]"""
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result(
+            yield self._plain(event,
                 "用法：\n"
                 "  /jmrank day    日榜\n"
                 "  /jmrank week   周榜\n"
@@ -2133,11 +2147,11 @@ class JmComicPlugin(Star):
         }
 
         if rank_type not in rank_map:
-            yield event.plain_result("类型只能是 day / week / month")
+            yield self._plain(event, "类型只能是 day / week / month")
             return
 
         rank_name, method_name = rank_map[rank_type]
-        yield event.plain_result(f"🏆 获取{rank_name} 第{qq_page}页...")
+        yield self._plain(event, f"🏆 获取{rank_name} 第{qq_page}页...")
 
         try:
             client = self._new_logged_client()
@@ -2158,7 +2172,7 @@ class JmComicPlugin(Star):
             page_items = all_items[start:end]
 
             if not page_items:
-                yield event.plain_result("没有更多了")
+                yield self._plain(event, "没有更多了")
                 return
 
             results = []
@@ -2172,10 +2186,10 @@ class JmComicPlugin(Star):
 
             reply = f"🏆 {rank_name}（第{qq_page}页）\n\n" + "\n".join(results)
             reply += f"\n\n下一页：/jmrank {rank_type} {qq_page + 1}"
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "获取排行榜"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取排行榜"))
 
     # ========== /jmhis 下载历史 ==========
     @filter.command("jmhis")
@@ -2189,42 +2203,47 @@ class JmComicPlugin(Star):
             if user_id in data:
                 del data[user_id]
             self._save_history(data)
-            yield event.plain_result("🧹 你的下载历史已清空")
+            yield self._plain(event, "🧹 你的下载历史已清空")
             return
 
         # /jmhis -all：管理员查看所有成员的历史
         if len(args) >= 2 and args[1].lower() in ("-all", "all"):
             is_admin = event.is_admin() if hasattr(event, 'is_admin') else getattr(event, 'role', '') == 'admin'
             if not is_admin:
-                yield event.plain_result("⚠️ 只有管理员可以使用 /jmhis -all")
+                yield self._plain(event, "⚠️ 只有管理员可以使用 /jmhis -all")
                 return
             data = self._load_history()
             if not data:
-                yield event.plain_result("还没有任何下载记录")
+                yield self._plain(event, "还没有任何下载记录")
                 return
             lines = []
             total_records = 0
+            total_users = 0
             for uid, items in data.items():
                 if not items:
                     continue
+                total_users += 1
                 total_records += len(items)
                 lines.append(f"👤 用户 {uid}（{len(items)}条）")
-                for item in items[:5]:
+                for index, item in enumerate(items, 1):
                     title = self._safe_text(item.get('title', ''), self.convert_title)
                     lines.append(
-                        f"  [JM{item.get('id', '')}] {title[:30]}  "
+                        f"  {index}. [JM{item.get('id', '')}] {title[:30]}  "
                         f"({item.get('size_mb', '?')}MB)  {item.get('time', '')}"
                     )
-                if len(items) > 5:
-                    lines.append(f"  ... 还有{len(items) - 5}条")
                 lines.append("")
-            reply = f"📜 全部成员下载历史（{len(data)}人，共{total_records}条）\n\n" + "\n".join(lines)
-            yield event.plain_result(reply[:3500])
+            reply = (
+                f"📜 全部成员下载历史（{total_users}人，共{total_records}条）\n\n"
+                + "\n".join(lines)
+            ).rstrip()
+            if len(reply) > 3500:
+                reply = reply[:3450] + "\n...（消息过长，已截断）"
+            yield self._plain(event, reply)
             return
 
         history = self._get_user_history(user_id)
         if not history:
-            yield event.plain_result("还没有下载记录")
+            yield self._plain(event, "还没有下载记录")
             return
 
         results = []
@@ -2237,7 +2256,7 @@ class JmComicPlugin(Star):
 
         reply = "📜 下载历史（最近20条）：\n\n" + "\n".join(results)
         reply += "\n\n/jmhis clear 清空历史"
-        yield event.plain_result(reply)
+        yield self._plain(event, reply)
 
     # ========== /jmc 评论查看 ==========
     @filter.command("jmc")
@@ -2247,7 +2266,7 @@ class JmComicPlugin(Star):
         """
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
+            yield self._plain(event, "用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
             return
 
         album_id = args[1]
@@ -2255,10 +2274,10 @@ class JmComicPlugin(Star):
 
         # HTML 客户端不支持评论翻页，最多10条
         if page_num > 1 and self.client_type != 'api':
-            yield event.plain_result("⚠️ 评论翻页仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+            yield self._plain(event, "⚠️ 评论翻页仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
             return
 
-        yield event.plain_result(f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
+        yield self._plain(event, f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
 
         try:
             client = self._new_logged_client()
@@ -2267,7 +2286,7 @@ class JmComicPlugin(Star):
             comment_cache_key = f"comment_pages_{album_id}"
             known_max_page = getattr(self, '_comment_page_cache', {}).get(comment_cache_key)
             if known_max_page and page_num > known_max_page:
-                yield event.plain_result(f"⚠️ JM{album_id} 评论共 {known_max_page} 页，已到最后一页")
+                yield self._plain(event, f"⚠️ JM{album_id} 评论共 {known_max_page} 页，已到最后一页")
                 return
 
             page = await asyncio.to_thread(client.album_pagination, album_id, page=page_num)
@@ -2282,7 +2301,7 @@ class JmComicPlugin(Star):
 
             # 请求页码超过总页数时，上游会重复返回第一页内容，这里直接拦截
             if page_count is not None and page_num > page_count:
-                yield event.plain_result(
+                yield self._plain(event,
                     f"⚠️ JM{album_id} 评论共 {page_count} 页，已到最后一页\n"
                     f"🔙 回到第1页：/jmc {album_id} 1"
                 )
@@ -2291,12 +2310,12 @@ class JmComicPlugin(Star):
             comments = list(page)
             if not comments:
                 if page_num > 1:
-                    yield event.plain_result(
+                    yield self._plain(event,
                         f"⚠️ 第{page_num}页没有评论，已经到最后一页了\n"
                         f"🔙 上一页：/jmc {album_id} {page_num - 1}"
                     )
                 else:
-                    yield event.plain_result("还没有评论")
+                    yield self._plain(event, "还没有评论")
                 return
 
             id_to_name = {}
@@ -2366,10 +2385,10 @@ class JmComicPlugin(Star):
             if page_count is None or page_num < page_count:
                 reply += f"\n\n下一页：/jmc {album_id} {page_num + 1}"
 
-            yield event.plain_result(reply[:3500])
+            yield self._plain(event, reply[:3500])
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "获取评论"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取评论"))
 
     # ========== /jmwhoami 查看自己的ID ==========
     @filter.command("jmwhoami")
@@ -2386,13 +2405,13 @@ class JmComicPlugin(Star):
         if not self.owner_ids:
             lines.append("\n⚠️ 尚未配置 owner_ids，账号类命令暂时不可用。")
             lines.append(f"把上面的ID填入插件配置 owner_ids 即可。")
-        yield event.plain_result("\n".join(lines))
+        yield self._plain(event, "\n".join(lines))
 
     # ========== /jmdomain 查看可用域名 ==========
     @filter.command("jmdomain")
     async def jm_domain(self, event: AstrMessageEvent):
         """查看 API 与 HTML 两套可用域名"""
-        yield event.plain_result("🌐 正在获取可用域名...")
+        yield self._plain(event, "🌐 正在获取可用域名...")
         try:
             client = self._new_logged_client()
             client_label = "API" if self.client_type == "api" else "HTML"
@@ -2456,9 +2475,9 @@ class JmComicPlugin(Star):
                 "HTML 客户端可在配置中填写可用域名\n"
             )
 
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "获取域名"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取域名"))
 
     # ========== /jmupdate 查看更新日志 ==========
     @filter.command("jmupdate")
@@ -2466,13 +2485,16 @@ class JmComicPlugin(Star):
         """查看插件更新日志"""
         changelog_path = Path(__file__).parent / "CHANGELOG.md"
         if not changelog_path.exists():
-            yield event.plain_result("❌ 更新日志文件不存在")
+            yield self._plain(event, "❌ 更新日志文件不存在")
             return
         content = changelog_path.read_text(encoding="utf-8")
-        # 只发最近两个版本
-        parts = content.split("---\n\n## ")
-        reply = parts[0]
-        yield event.plain_result(f"📝 插件更新日志：\n\n{reply[:1500]}")
+        # 只发最新版本：从第一个二级标题开始，到下一个二级标题前结束
+        match = re.search(r"^##\s+.*?(?=^##\s+|\Z)", content, re.S | re.M)
+        reply = match.group(0).strip() if match else content.strip()
+        reply = re.sub(r"\n+---\s*$", "", reply).strip()
+        if len(reply) > 1800:
+            reply = reply[:1750] + "\n...（已截断）"
+        yield self._plain(event, f"📝 最新更新日志：\n\n{reply}")
 
     # ========== /jmfav 收藏夹 ==========
     def _clear_client_cache(self, client):
@@ -2520,7 +2542,7 @@ class JmComicPlugin(Star):
         /jmfav del <漫画id> → 从收藏夹移除
         """
         if not self._is_owner(event):
-            yield event.plain_result(self._owner_required_text())
+            yield self._plain(event, self._owner_required_text())
             return
         args = event.message_str.split()
 
@@ -2538,25 +2560,25 @@ class JmComicPlugin(Star):
                 pass
 
             if not username:
-                yield event.plain_result("⚠️ 未配置登录账号，无法使用收藏夹功能")
+                yield self._plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
                 return
 
             # /jmfav add <id> — 添加收藏（仅API客户端支持）
             if len(args) >= 3 and args[1].lower() == 'add':
                 if self.client_type != 'api':
-                    yield event.plain_result("⚠️ 添加收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+                    yield self._plain(event, "⚠️ 添加收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
                     return
                 album_id = args[2]
-                yield event.plain_result(f"⭐ 正在检查 JM{album_id} 的收藏状态...")
+                yield self._plain(event, f"⭐ 正在检查 JM{album_id} 的收藏状态...")
                 is_fav, _album = await self._favorite_state(client, album_id)
                 if is_fav:
-                    yield event.plain_result(f"ℹ️ JM{album_id} 已经在收藏夹里了")
+                    yield self._plain(event, f"ℹ️ JM{album_id} 已经在收藏夹里了")
                 else:
                     await asyncio.to_thread(client.add_favorite_album, album_id, folder_id='0')
                     self._clear_client_cache(client)
-                    yield event.plain_result(f"✅ 已收藏 JM{album_id}")
+                    yield self._plain(event, f"✅ 已收藏 JM{album_id}")
                 try:
-                    yield event.plain_result(await self._render_favorites(client, '0'))
+                    yield self._plain(event, await self._render_favorites(client, '0'))
                 except Exception as list_err:
                     logger.warning(f"刷新收藏夹失败: {list_err}")
                 return
@@ -2564,22 +2586,22 @@ class JmComicPlugin(Star):
             # /jmfav del <id> — 删除收藏（仅API客户端支持，且需jmcomic较新版本）
             if len(args) >= 3 and args[1].lower() == 'del':
                 if self.client_type != 'api':
-                    yield event.plain_result("⚠️ 移除收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
+                    yield self._plain(event, "⚠️ 移除收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
                     return
                 if not hasattr(client, 'delete_favorite_album'):
-                    yield event.plain_result("⚠️ 当前 jmcomic 版本不支持移除收藏，请升级 jmcomic 到最新版本")
+                    yield self._plain(event, "⚠️ 当前 jmcomic 版本不支持移除收藏，请升级 jmcomic 到最新版本")
                     return
                 album_id = args[2]
-                yield event.plain_result(f"🗑️ 正在检查 JM{album_id} 的收藏状态...")
+                yield self._plain(event, f"🗑️ 正在检查 JM{album_id} 的收藏状态...")
                 is_fav, _album = await self._favorite_state(client, album_id)
                 if not is_fav:
-                    yield event.plain_result(f"ℹ️ JM{album_id} 本来就不在收藏夹里，无需移除")
+                    yield self._plain(event, f"ℹ️ JM{album_id} 本来就不在收藏夹里，无需移除")
                 else:
                     await asyncio.to_thread(client.delete_favorite_album, album_id, folder_id='0')
                     self._clear_client_cache(client)
-                    yield event.plain_result(f"✅ 已移除收藏 JM{album_id}")
+                    yield self._plain(event, f"✅ 已移除收藏 JM{album_id}")
                 try:
-                    yield event.plain_result(await self._render_favorites(client, '0'))
+                    yield self._plain(event, await self._render_favorites(client, '0'))
                 except Exception as list_err:
                     logger.warning(f"刷新收藏夹失败: {list_err}")
                 return
@@ -2587,8 +2609,8 @@ class JmComicPlugin(Star):
             # /jmfav <folder_id> — 查看指定文件夹内容
             if len(args) >= 2 and args[1].isdigit():
                 folder_id = args[1]
-                yield event.plain_result(f"⭐ 获取收藏夹 [ID:{folder_id}] 的内容...")
-                yield event.plain_result(
+                yield self._plain(event, f"⭐ 获取收藏夹 [ID:{folder_id}] 的内容...")
+                yield self._plain(event,
                     await self._render_favorites(
                         client, folder_id, f"⭐ 收藏夹 [ID:{folder_id}]", 20
                     )
@@ -2596,14 +2618,14 @@ class JmComicPlugin(Star):
                 return
 
             # /jmfav — 列出收藏夹文件夹
-            yield event.plain_result("⭐ 获取我的收藏夹列表...")
+            yield self._plain(event, "⭐ 获取我的收藏夹列表...")
             page = await asyncio.to_thread(client.favorite_folder, 1)
 
             # 列出所有收藏夹文件夹
             folders = list(page.iter_folder_id_name())
             if not folders:
                 # 如果没有文件夹列表，直接显示全部收藏
-                yield event.plain_result(
+                yield self._plain(event,
                     await self._render_favorites(client, '0', "⭐ 我的收藏", 20)
                 )
                 return
@@ -2616,10 +2638,10 @@ class JmComicPlugin(Star):
 
             reply = "⭐ 我的收藏夹文件夹：\n\n" + "\n".join(folder_lines)
             reply += "\n\n💡 /jmfav <文件夹id> 查看内容，/jmfav add <漫画id> 添加收藏"
-            yield event.plain_result(reply)
+            yield self._plain(event, reply)
 
         except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "收藏夹操作"))
+            yield self._plain(event, self._handle_jm_exception(e, "收藏夹操作"))
 
     async def terminate(self):
         pass
