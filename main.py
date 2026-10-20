@@ -1354,19 +1354,26 @@ class JmComicPlugin(Star):
 
             # 执行签到
             yield event.plain_result("✅ 正在签到...")
-            resp = await asyncio.to_thread(client.daily_checkin)
-
-            if resp.code == 0:
-                result_msg = f"🎉 签到成功！\n{resp.msg}"
-            elif resp.code == 1:
-                result_msg = f"📌 今日已签到\n{resp.msg}"
-            else:
-                result_msg = f"签到结果：{resp.msg}"
+            try:
+                resp = await asyncio.to_thread(client.daily_checkin)
+                if resp.code == 0:
+                    result_msg = f"🎉 签到成功！\n{resp.msg}"
+                elif resp.code == 1:
+                    result_msg = f"📌 今日已签到\n{resp.msg}"
+                else:
+                    result_msg = f"签到结果：{resp.msg}"
+            except Exception as checkin_err:
+                # jmcomic 2.7.9 的关键词匹配只支持繁体，API返回简体"今天已经签到过了"时会抛异常
+                err_str = str(checkin_err)
+                if any(kw in err_str for kw in ('已签', '签到过', '已经签', '今日已')):
+                    result_msg = f"📌 今日已签到\n{err_str.replace('签到失败：', '')}"
+                else:
+                    raise
 
             reply = f"📅 每日签到\n\n{result_msg}\n\n"
             reply += f"🔥 连续签到：{old_step} 天\n"
             reply += f"📆 本月已签：{len(signed_dates)} 天"
-            if today_signed or resp.code == 1:
+            if today_signed or '已签' in result_msg:
                 reply += "\n\n✅ 今日已完成签到"
 
             yield event.plain_result(reply)
@@ -1403,8 +1410,18 @@ class JmComicPlugin(Star):
                     daily = await asyncio.to_thread(client.get_daily)
                     if hasattr(daily, 'model_data'):
                         data = daily.model_data
-                        old_step = data.get('oldStep', 0) or 0
+                        # 连续签到天数：尝试多种字段名
+                        old_step = data.get('oldStep', data.get('old_step', data.get('continuous', 0))) or 0
+                        # 今日是否已签：error=='finished' 或 record 中有今日记录
                         today_signed = data.get('error') == 'finished'
+                        if not today_signed:
+                            # 从签到记录推断今日是否已签
+                            record = data.get('record', [])
+                            for week in record:
+                                for day in week:
+                                    if day.get('signed') and day.get('is_today'):
+                                        today_signed = True
+                                        break
                 except Exception:
                     pass
 
