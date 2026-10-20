@@ -1615,11 +1615,28 @@ class JmComicPlugin(Star):
             client = self._new_logged_client()
             domains = client.get_domain_list()
             client_label = "API" if self.client_type == "api" else "HTML"
-            reply = f"🌐 JM 当前可用 {client_label} 域名列表：\n\n" + "\n".join(f"  {i+1}. {d}" for i, d in enumerate(domains[:10]))
+
+            # 用户配置的自定义域名
+            domain_str = self.config.get("domain", "comic18j-guta.site")
+            custom_domains = [d.strip() for d in domain_str.split(",") if d.strip()]
+
+            reply = f"🌐 JM 当前 {client_label} 客户端域名信息\n\n"
+
             if self.client_type == "api":
-                reply += "\n\nAPI 客户端会自动选择最快的域名并自动更新，一般无需手动配置"
+                reply += "📡 接口域名（用于API请求，浏览器打开无画面）：\n"
+                for i, d in enumerate(domains[:10]):
+                    reply += f"  {i+1}. {d}\n"
+                reply += "\n💡 API客户端自动选择最快域名并自动更新，无需手动配置\n"
+                if custom_domains:
+                    reply += f"\n⚙️ 你配置的自定义域名：{', '.join(custom_domains)}\n"
             else:
-                reply += "\n\nHTML 客户端需手动配置可用域名，如连不上可尝试更换"
+                reply += "🌍 网页域名（浏览器可直接访问）：\n"
+                for i, d in enumerate(domains[:10]):
+                    reply += f"  {i+1}. {d}\n"
+                reply += "\n💡 HTML客户端需手动配置可用域名，连不上可尝试更换\n"
+                if custom_domains:
+                    reply += f"\n⚙️ 你配置的自定义域名：{', '.join(custom_domains)}\n"
+
             yield event.plain_result(reply)
         except Exception as e:
             yield event.plain_result(self._handle_jm_exception(e, "获取域名"))
