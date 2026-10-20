@@ -303,6 +303,17 @@ class JmComicPlugin(Star):
         except:
             return text
 
+    def _find_album_dir(self, album_id):
+        """按ID查找已下载的漫画目录，不依赖album.save_path（该字段在jmcomic 2.7.9中可能返回基础目录）
+        返回 Path 或 None
+        """
+        for d in self.download_base_dir.glob(f"JM{album_id}_*"):
+            if d.is_dir():
+                # 安全检查：确保不是基础下载目录本身
+                if d.resolve() != self.download_base_dir.resolve():
+                    return d
+        return None
+
     def _load_history(self):
         """加载下载历史，结构是 {user_id: [历史列表]}"""
         try:
@@ -390,15 +401,13 @@ class JmComicPlugin(Star):
             try:
                 yield event.plain_result(f"⬇️ [{idx+1}/{len(id_list)}] 开始下载 JM{album_id} ...")
 
-                # 检查缓存
-                existing_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
-                if existing_dirs and existing_dirs[0].is_dir():
-                    album_dir = existing_dirs[0]
-                else:
+                # 检查缓存或下载后按ID查找目录
+                album_dir = self._find_album_dir(album_id)
+                if album_dir is None:
                     result = await jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
-                    album_dir = Path(result.detail.save_path)
+                    album_dir = self._find_album_dir(album_id)
 
-                if not album_dir.exists():
+                if album_dir is None:
                     failed_ids.append(album_id)
                     continue
 
@@ -788,13 +797,13 @@ class JmComicPlugin(Star):
                         last_pct = pct
                         yield event.plain_result(f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
 
-            # 获取下载结果
+            # 获取下载结果，按ID查找目录（不依赖album.save_path）
             result = download_task.result()
             album = result.detail
 
-            album_dir = Path(album.save_path)
-            if not album_dir.exists():
-                yield event.plain_result("⚠️ 下载完成但找不到目录")
+            album_dir = self._find_album_dir(album_id)
+            if album_dir is None:
+                yield event.plain_result("⚠️ 下载完成但找不到漫画目录")
                 return
 
             yield event.plain_result(f"📦 正在打包ZIP ...")
@@ -1052,10 +1061,13 @@ class JmComicPlugin(Star):
                         last_pct = pct
                         yield event.plain_result(f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
 
-            # 获取下载结果
+            # 获取下载结果，按ID查找目录
             result = download_task.result()
             album = result.detail
-            album_dir = Path(album.save_path)
+            album_dir = self._find_album_dir(album_id)
+            if album_dir is None:
+                yield event.plain_result("⚠️ 下载完成但找不到漫画目录")
+                return
 
             # 找所有图片，按顺序排序
             image_files = sorted([f for f in album_dir.rglob("*.jpg")] + [f for f in album_dir.rglob("*.png")])
@@ -1204,12 +1216,8 @@ class JmComicPlugin(Star):
 
         album_id = args[1]
 
-        # 先找已下载的缓存（严格匹配 JM{id}_ 开头的子目录）
-        album_dir = None
-        for d in self.download_base_dir.glob(f"JM{album_id}_*"):
-            if d.is_dir():
-                album_dir = d
-                break
+        # 先找已下载的缓存
+        album_dir = self._find_album_dir(album_id)
 
         if album_dir is not None:
             yield event.plain_result(f"🖼️ 找到已下载的文件，正在生成长图...")
@@ -1217,17 +1225,14 @@ class JmComicPlugin(Star):
             yield event.plain_result(f"⬇️ 开始下载 JM{album_id} 并生成长图...")
             try:
                 result = await jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
-                album_dir = Path(result.detail.save_path)
+                album_dir = self._find_album_dir(album_id)
             except Exception as e:
                 yield event.plain_result(self._handle_jm_exception(e, "下载"))
                 return
 
-        # 安全检查：确保目录存在且不是基础下载目录本身
-        if not album_dir or not album_dir.exists() or not album_dir.is_dir():
-            yield event.plain_result("❌ 下载目录不存在")
-            return
-        if album_dir.resolve() == self.download_base_dir.resolve():
-            yield event.plain_result("❌ 目录解析异常，未找到正确的漫画子目录")
+        # 安全检查
+        if album_dir is None:
+            yield event.plain_result("❌ 下载完成但找不到漫画目录")
             return
 
         try:
