@@ -543,6 +543,7 @@ class JmComicPlugin(Star):
 
         try:
             total = None
+            totals = []
             if self.dual_search:
                 # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
                 import zhconv
@@ -552,9 +553,12 @@ class JmComicPlugin(Star):
                 all_items = []
                 for kw in search_keywords:
                     page = await asyncio.to_thread(search_method, kw, web_page, order_by)
-                    if total is None:
-                        total = getattr(page, 'total', None)
+                    page_total = getattr(page, 'total', None)
+                    if page_total is not None:
+                        totals.append(int(page_total))
                     all_items.extend(list(page.iter_id_title_tag()))
+                if totals:
+                    total = max(totals)
                 # 去重
                 seen = set()
                 unique_items = []
