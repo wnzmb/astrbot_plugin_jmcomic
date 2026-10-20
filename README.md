@@ -78,8 +78,8 @@
 | 指令 | 用法 | 功能 |
 |---|---|---|
 | `/jmrank` | `/jmrank day/week/month [页码]` | 日榜 / 周榜 / 月榜 |
-| `/jmhis` | `/jmhis` / `/jmhis clear` | 查看/清空下载历史 |
-| `/jmdomain` | `/jmdomain` | 查看当前可用 API 域名 |
+| `/jmhis` | `/jmhis` / `/jmhis clear` / `/jmhis -all` | 查看/清空下载历史；管理员用 `-all` 查看全部成员 |
+| `/jmdomain` | `/jmdomain` | 同时查看 API 与 HTML 可用域名 |
 | `/jmupdate` | `/jmupdate` | 查看插件更新日志 |
 | `/jmrand` | `/jmrand [关键词]` | 随机抽一个漫画（可指定关键词） |
 | `/jm help` | `/jm help` | 查看帮助 |
@@ -107,6 +107,8 @@
 ```
 
 💡 搜索小提示：建议只打前几个关键词，打全容易因为网站标题简繁混杂漏结果。
+
+搜索结果现在会显示总结果数，例如 `第1页，第1-10条，共 123 条`。
 
 ---
 
