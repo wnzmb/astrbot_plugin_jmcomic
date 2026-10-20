@@ -206,6 +206,10 @@ class JmComicPlugin(Star):
         self.option = jmcomic.create_option_by_str(option_str)
         self.option.dir_rule.base_dir = str(self.download_base_dir)
 
+        # 登录态客户端缓存：避免每次命令都重新登录
+        self._cached_client = None
+        self._client_lock = None  # 延迟创建，避免__init__时event_loop未就绪
+
         # 排序方式映射
         self.order_map = {
             'mr': '最新',
@@ -248,6 +252,7 @@ class JmComicPlugin(Star):
 
     def _new_logged_client(self):
         """创建客户端；若配置了账号密码则同步登录一次，确保会员登录态。
+        带缓存：复用已登录的客户端，避免每次命令都重新登录。
 
         签到、收藏夹、搜索等接口需要登录态：
         - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
@@ -256,6 +261,10 @@ class JmComicPlugin(Star):
         - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
         这里在每次创建客户端时主动 login 一次，并给出可操作的错误提示。
         """
+        # 优先返回缓存的已登录客户端
+        if self._cached_client is not None:
+            return self._cached_client
+
         client = self.option.new_jm_client()
         username = self.config.get("username", "")
         password = self.config.get("password", "")
@@ -265,7 +274,14 @@ class JmComicPlugin(Star):
                 logger.info("JMComic 客户端登录成功")
             except Exception as e:
                 raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
+
+        # 缓存已登录客户端，后续命令复用
+        self._cached_client = client
         return client
+
+    def _invalidate_client(self):
+        """客户端登录态失效时调用，下次请求会重新登录"""
+        self._cached_client = None
 
     def _to_simplified(self, text):
         """繁体转简体"""
@@ -549,7 +565,7 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"🔍 查询 JM{album_id} ...")
 
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
             chapters = list(album) if hasattr(album, '__iter__') else []
@@ -853,7 +869,7 @@ class JmComicPlugin(Star):
 
         try:
             import random
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
 
             if tag_name:
                 # 全站搜索，关键词可以是标题/标签/作者
@@ -1442,7 +1458,7 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"🏆 获取{rank_name} 第{qq_page}页...")
 
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
             method = getattr(client, method_name)
 
             PER_QQ_PAGE = self.per_page
@@ -1531,7 +1547,7 @@ class JmComicPlugin(Star):
         yield event.plain_result(f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
 
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
             page = await asyncio.to_thread(client.album_pagination, album_id, page=page_num)
 
             comments = list(page)
@@ -1596,7 +1612,7 @@ class JmComicPlugin(Star):
         """查看当前可用域名列表"""
         yield event.plain_result("🌐 正在获取可用域名...")
         try:
-            client = self.option.new_jm_client()
+            client = self._new_logged_client()
             domains = client.get_domain_list()
             client_label = "API" if self.client_type == "api" else "HTML"
             reply = f"🌐 JM 当前可用 {client_label} 域名列表：\n\n" + "\n".join(f"  {i+1}. {d}" for i, d in enumerate(domains[:10]))
