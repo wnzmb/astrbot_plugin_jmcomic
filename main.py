@@ -801,9 +801,9 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
-                "💾 下载缓存：JM{漫画id}_{标题}，默认保留 {cache_days} 天\n"
+                "💾 下载缓存：JM{{漫画id}}_{{标题}}，默认保留 {cache_days} 天\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
-                "📦 需 jmcomic 2.7.6+，签到/删除收藏需 2.7.9+".format(
+                "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）".format(
                     client_type=self.client_type.upper(), cache_days=self.cache_days
                 )
             )
@@ -1500,7 +1500,7 @@ class JmComicPlugin(Star):
             if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
                 yield event.plain_result(
                     f"⚠️ 当前 jmcomic 版本（{jm_version}）不支持每日签到功能\n"
-                    f"需要 jmcomic >= 2.7.6，请升级后重启 AstrBot：\n"
+                    f"需要 jmcomic >= 2.7.7（推荐升级到 2.7.9），请升级后重启 AstrBot：\n"
                     f"  D:\\Program Files\\AstrBot\\backend\\python\\python.exe -m pip install -U jmcomic"
                 )
                 return

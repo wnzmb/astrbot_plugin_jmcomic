@@ -1,14 +1,18 @@
 name: astrbot_plugin_jmcomic
 display_name: 漫画下载插件
-short_desc: 漫画搜索、详情、下载，支持ZIP/PDF/长图、签到、收藏
+short_desc: 漫画搜索、详情、评论、下载ZIP/PDF/长图、签到、收藏
 desc: |
-  漫画站 QQ 机器人插件，基于 jmcomic 库开发，支持搜索、详情查看、下载ZIP/PDF/长图、批量下载、单章节下载、评论翻页、收藏夹管理、每日签到、排行榜、随机推荐等功能，所有参数均可在配置页自定义。
+  漫画站助手插件，基于 jmcomic 库开发，支持全站/作者/标签/角色/原作搜索、详情查看、评论翻页、下载ZIP/PDF/长图、批量下载、单章节下载、每日签到、收藏夹管理、排行榜、随机推荐、下载历史、敏感词自动转拼音、简繁自动转换等功能，所有参数均可在配置页自定义。
 version: 0.6.2
 author: wnzmb
 repo: https://github.com/wnzmb/astrbot_plugin_jmcomic
 astrbot_version: ">=4.0.0"
 tags:
   - 漫画
+  - 搜索
   - 下载
   - ZIP
   - PDF
+  - 长图
+  - 签到
+  - 收藏
