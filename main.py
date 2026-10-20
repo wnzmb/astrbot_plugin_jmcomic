@@ -1572,6 +1572,14 @@ class JmComicPlugin(Star):
 
         try:
             client = self._new_logged_client()
+
+            # 超页检测：如果已知总页数且超过，直接提示（避免API返回重复内容）
+            comment_cache_key = f"comment_pages_{album_id}"
+            known_max_page = getattr(self, '_comment_page_cache', {}).get(comment_cache_key)
+            if known_max_page and page_num > known_max_page:
+                yield event.plain_result(f"⚠️ JM{album_id} 评论共 {known_max_page} 页，已到最后一页")
+                return
+
             page = await asyncio.to_thread(client.album_pagination, album_id, page=page_num)
 
             comments = list(page)
@@ -1612,6 +1620,11 @@ class JmComicPlugin(Star):
             # 分页信息
             total = getattr(page, 'total', None)
             page_count = getattr(page, 'page_count', None)
+            # 缓存总页数，用于超页检测
+            if page_count:
+                if not hasattr(self, '_comment_page_cache'):
+                    self._comment_page_cache = {}
+                self._comment_page_cache[f"comment_pages_{album_id}"] = page_count
             header = f"💬 JM{album_id} 评论（第{page_num}页"
             if total is not None:
                 header += f"，共{total}条"
