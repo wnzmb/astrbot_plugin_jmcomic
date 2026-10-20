@@ -477,8 +477,10 @@ class JmComicPlugin(Star):
                 # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
                 import zhconv
                 keyword_traditional = zhconv.convert(keyword, 'zh-tw')
+                # 如果原词和繁体词相同，只搜一次
+                search_keywords = [keyword] if keyword == keyword_traditional else [keyword, keyword_traditional]
                 all_items = []
-                for kw in [keyword, keyword_traditional]:
+                for kw in search_keywords:
                     page = await asyncio.to_thread(search_method, kw, web_page, order_by)
                     all_items.extend(list(page.iter_id_title_tag()))
                 # 去重
@@ -1591,6 +1593,9 @@ class JmComicPlugin(Star):
             header = f"💬 JM{album_id} 评论（第{page_num}页"
             if total is not None:
                 header += f"，共{total}条"
+                # 上游API评论接口最多返回5000条，超过会被截断
+                if total >= 5000:
+                    header += "（上游API上限5000条）"
             if page_count is not None:
                 header += f"，共{page_count}页"
             header += "）"
