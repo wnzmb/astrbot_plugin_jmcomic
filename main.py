@@ -1186,27 +1186,48 @@ class JmComicPlugin(Star):
 
         album_id = args[1]
 
-        # 先找已下载的缓存
-        existing_album_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
-        if existing_album_dirs and existing_album_dirs[0].is_dir():
-            album_dir = existing_album_dirs[0]
+        # 先找已下载的缓存（严格匹配 JM{id}_ 开头的子目录）
+        album_dir = None
+        for d in self.download_base_dir.glob(f"JM{album_id}_*"):
+            if d.is_dir():
+                album_dir = d
+                break
+
+        if album_dir is not None:
             yield event.plain_result(f"🖼️ 找到已下载的文件，正在生成长图...")
         else:
             yield event.plain_result(f"⬇️ 开始下载 JM{album_id} 并生成长图...")
             try:
-                result = await jmcomic.download_album_async(album_id, self.option)
+                result = await jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
                 album_dir = Path(result.detail.save_path)
             except Exception as e:
                 yield event.plain_result(self._handle_jm_exception(e, "下载"))
                 return
 
+        # 安全检查：确保目录存在且不是基础下载目录本身
+        if not album_dir or not album_dir.exists() or not album_dir.is_dir():
+            yield event.plain_result("❌ 下载目录不存在")
+            return
+        if album_dir.resolve() == self.download_base_dir.resolve():
+            yield event.plain_result("❌ 目录解析异常，未找到正确的漫画子目录")
+            return
+
         try:
-            # 找所有图片，按顺序排序
+            # 找所有图片，按顺序排序（只在当前目录下找，不递归到其他漫画）
             image_files = sorted(
-                [f for f in album_dir.rglob("*.jpg")] +
-                [f for f in album_dir.rglob("*.png")] +
-                [f for f in album_dir.rglob("*.webp")]
+                [f for f in album_dir.glob("*.jpg")] +
+                [f for f in album_dir.glob("*.png")] +
+                [f for f in album_dir.glob("*.webp")]
             )
+            # 如果当前目录没有图片，可能有章节子目录
+            if not image_files:
+                for sub in sorted(album_dir.iterdir()):
+                    if sub.is_dir():
+                        image_files.extend(sorted(
+                            [f for f in sub.glob("*.jpg")] +
+                            [f for f in sub.glob("*.png")] +
+                            [f for f in sub.glob("*.webp")]
+                        ))
             if not image_files:
                 yield event.plain_result("⚠️ 找不到图片文件")
                 return
