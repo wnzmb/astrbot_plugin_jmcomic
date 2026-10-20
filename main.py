@@ -63,7 +63,7 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.5.2")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.6.1")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
