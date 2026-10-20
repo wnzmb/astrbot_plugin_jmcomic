@@ -359,7 +359,7 @@ class JmComicPlugin(Star):
         return zip_path
 
     async def _download_batch(self, event, id_str):
-        """批量下载：逗号分隔的ID列表"""
+        """批量下载：逗号分隔的ID列表，逐本下载逐本发送"""
         id_list = [x.strip() for x in id_str.split(',') if x.strip()]
         if not id_list:
             yield event.plain_result("❌ 未解析到有效ID")
@@ -367,52 +367,58 @@ class JmComicPlugin(Star):
 
         yield event.plain_result(f"📦 批量下载 {len(id_list)} 本：{', '.join(id_list)}")
 
-        try:
-            # jmcomic 原生支持传入可迭代对象进行批量下载
-            result = await jmcomic.download_album_async(id_list, self.option)
+        success_count = 0
+        failed_ids = []
 
-            # 逐个打包发送成功的
-            sent_count = 0
-            for item in result:
-                album = item.detail
-                album_dir = Path(album.save_path)
+        for idx, album_id in enumerate(id_list):
+            try:
+                yield event.plain_result(f"⬇️ [{idx+1}/{len(id_list)}] 开始下载 JM{album_id} ...")
+
+                # 检查缓存
+                existing_dirs = list(self.download_base_dir.glob(f"JM{album_id}_*"))
+                if existing_dirs and existing_dirs[0].is_dir():
+                    album_dir = existing_dirs[0]
+                else:
+                    result = await jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
+                    album_dir = Path(result.detail.save_path)
+
                 if not album_dir.exists():
+                    failed_ids.append(album_id)
                     continue
 
-                zip_name = f"JM{album.album_id}_{album.name[:30]}.zip"
+                # 打包ZIP
+                zip_name = f"JM{album_id}_{album_dir.name.replace(f'JM{album_id}_', '')[:30]}.zip"
                 for ch in r'\/:*?"<>|':
                     zip_name = zip_name.replace(ch, '_')
                 zip_path = self.zip_base_dir / zip_name
-
                 await asyncio.to_thread(self._zip_folder, album_dir, zip_path)
                 size_mb = zip_path.stat().st_size / 1024 / 1024
 
-                yield event.plain_result(f"✅ [{sent_count+1}/{len(id_list)}] JM{album.album_id} 下载完成，{size_mb:.1f}MB，发送中...")
+                yield event.plain_result(f"✅ [{idx+1}/{len(id_list)}] JM{album_id} 完成，{size_mb:.1f}MB，发送中...")
                 yield event.chain_result([
                     Comp.Plain(f"📎 {zip_name}\n"),
                     Comp.File(file=str(zip_path), name=zip_name)
                 ])
                 zip_path.unlink(missing_ok=True)
-                sent_count += 1
+                success_count += 1
 
                 # 写入历史
                 user_id = event.get_sender_id()
                 self._add_user_history(user_id, {
-                    "id": album.album_id,
-                    "title": album.name,
+                    "id": album_id,
+                    "title": album_dir.name,
                     "time": time.strftime("%Y-%m-%d %H:%M"),
                     "size_mb": round(size_mb, 1)
                 })
 
-            # 报告失败的
-            if result.failed:
-                failed_ids = list(result.failed.keys())
-                yield event.plain_result(f"⚠️ 以下 {len(failed_ids)} 本下载失败：{', '.join(failed_ids)}")
+            except Exception as e:
+                failed_ids.append(album_id)
+                yield event.plain_result(f"❌ [{idx+1}/{len(id_list)}] JM{album_id} 下载失败：{e}")
 
-            yield event.plain_result(f"📊 批量下载完成：成功 {sent_count}/{len(id_list)} 本")
-
-        except Exception as e:
-            yield event.plain_result(self._handle_jm_exception(e, "批量下载"))
+        # 汇总
+        if failed_ids:
+            yield event.plain_result(f"⚠️ 以下 {len(failed_ids)} 本下载失败：{', '.join(failed_ids)}")
+        yield event.plain_result(f"📊 批量下载完成：成功 {success_count}/{len(id_list)} 本")
 
     def _parse_search_args(self, args):
         """
