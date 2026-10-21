@@ -96,14 +96,14 @@
   },
   "pdf_page_limit": {
     "type": "int",
-    "default": 200,
+    "default": 100,
     "description": "PDF 每册页数上限",
     "slider": {
       "min": 1,
       "max": 2000,
       "step": 10
     },
-    "hint": "PDF 优先整章装册，达到上限就换下一册；单章超过上限时自动按页切分成多册，例如 500 页会切成 200+200+100，不会生成一个超大 PDF。默认 200 页。"
+    "hint": "PDF 优先整章装册，达到上限就换下一册；单章超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。默认 100 页。"
   },
   "cache_days": {
     "type": "int",
@@ -129,7 +129,7 @@
   },
   "history_max": {
     "type": "int",
-    "default": 50,
+    "default": 0,
     "description": "历史保留条数",
     "slider": {
       "min": 0,
@@ -195,25 +195,25 @@
   },
   "daily_file_limit": {
     "type": "int",
-    "default": 100,
+    "default": 0,
     "description": "每日文件上限",
     "slider": {
       "min": 0,
       "max": 500,
       "step": 1
     },
-    "hint": "本插件每天最多发送的文件数，默认 100；填 0 表示不限制。只统计本插件发送的文件。"
+    "hint": "本插件每天最多发送的文件数，默认 0（不限制）。只统计本插件发送的文件。"
   },
   "hourly_file_limit": {
     "type": "int",
-    "default": 50,
+    "default": 0,
     "description": "每小时文件上限",
     "slider": {
       "min": 0,
       "max": 200,
       "step": 1
     },
-    "hint": "本插件每小时最多发送的文件数，默认 50；填 0 表示不限制。超限后停止发送并提示用 -c 继续。"
+    "hint": "本插件每小时最多发送的文件数，默认 0（不限制）。超限后停止发送并提示用 -c 继续。"
   },
   "send_interval": {
     "type": "float",

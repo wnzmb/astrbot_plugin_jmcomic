@@ -17,7 +17,7 @@ from astrbot.api import logger, AstrBotConfig
 import astrbot.api.message_components as Comp
 
 import jmcomic
-from jmcomic import JmMagicConstants, JmModuleConfig
+from jmcomic import DirRule, JmMagicConstants, JmModuleConfig
 from jmcomic.jm_exception import (
     MissingAlbumPhotoException,
     RequestRetryAllFailException,
@@ -74,6 +74,64 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
+class SafeDirRule(DirRule):
+    """限制缓存目录长度，避免 Windows MAX_PATH 260 导致长标题章节无法下载。
+
+    jmcomic 默认直接用完整漫画/章节标题做目录名，标题很长时会叠加超过
+    Windows 路径上限。这里只在最终路径过长时截断目录组件，并保留
+    ``JM{id}_`` / ``P{id}_`` 前缀，插件仍能按 ID 精确找到缓存。
+    """
+
+    MAX_TOTAL_PATH = 235
+    RESERVED_FOR_FILENAME = 24
+
+    @staticmethod
+    def _shorten_component(name, max_len):
+        name = str(name or "").rstrip(" .")
+        if len(name) <= max_len:
+            return name
+        match = re.match(r"^(?:JM|P)\d+_", name)
+        prefix = match.group(0) if match else ""
+        available = max_len - len(prefix)
+        if available < 1:
+            return prefix or name[:max_len].rstrip(" .") or "_"
+        return (prefix + name[len(prefix):len(prefix) + available]).rstrip(" .") or "_"
+
+    def _fit_path(self, path):
+        path = os.path.normpath(str(path))
+        base = os.path.normpath(str(self.base_dir))
+        try:
+            rel = os.path.relpath(path, base)
+        except ValueError:
+            return path
+        if rel == "." or rel.startswith(".." + os.sep) or rel == "..":
+            return path
+
+        parts = [part for part in rel.split(os.sep) if part]
+        if not parts:
+            return path
+        budget = max(24, self.MAX_TOTAL_PATH - len(base) - 1 - self.RESERVED_FOR_FILENAME)
+        # 固定按“漫画目录 + 章节目录”两段分配，保证单独计算专辑根目录和
+        # 计算章节图片目录时，对专辑目录名的截断结果一致。
+        max_each = max(12, min(60, budget // 2))
+        new_parts = [self._shorten_component(part, max_each) for part in parts]
+
+        # 组件单独截断后仍可能超长，继续压缩最长的组件。
+        while len(os.path.join(base, *new_parts)) > self.MAX_TOTAL_PATH:
+            index = max(range(len(new_parts)), key=lambda i: len(new_parts[i]))
+            component = new_parts[index]
+            match = re.match(r"^(?:JM|P)\d+_", component)
+            prefix_len = len(match.group(0)) if match else 0
+            if len(component) <= prefix_len + 4:
+                break
+            new_parts[index] = component[:-4].rstrip(" .") or "_"
+        return os.path.join(base, *new_parts)
+
+    def apply_rule_to_path(self, album, photo, only_album_rules=False):
+        path = super().apply_rule_to_path(album, photo, only_album_rules)
+        return self._fit_path(path)
+
+
 class PageUnit(NamedTuple):
     """一个待打包的页段：章节内第 start~end 页（1 起，含两端）"""
 
@@ -92,7 +150,7 @@ class PageUnit(NamedTuple):
         return self.start > 1 or self.end < self.total
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.3")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.4")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -247,6 +305,12 @@ class JmComicPlugin(Star):
         option_str = yaml.dump(option_dict, allow_unicode=True)
         self.option = jmcomic.create_option_by_str(option_str)
         self.option.dir_rule.base_dir = str(self.download_base_dir)
+        # 长标题会让完整路径超过 Windows MAX_PATH，替换为限长目录规则
+        self.option.dir_rule = SafeDirRule(
+            rule=self.option.dir_rule.rule_dsl,
+            base_dir=self.option.dir_rule.base_dir,
+            normalize_zh=self.option.dir_rule.normalize_zh,
+        )
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self._cached_client = None
@@ -262,7 +326,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.7.3，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.7.4，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -401,7 +465,7 @@ class JmComicPlugin(Star):
         elif isinstance(e, RequestRetryAllFailException):
             return f"❌ 网络请求全部失败，可尝试在插件配置中更换域名\n{e}"
         elif isinstance(e, PartialDownloadFailedException):
-            return f"⚠️ 部分图片下载失败，已发送已完成部分"
+            return f"⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
         elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
             return f"⏹️ 下载已取消"
         else:
@@ -499,6 +563,34 @@ class JmComicPlugin(Star):
                     return folder
 
         return None
+
+    def _album_cache_complete(self, folder: Path, chapters) -> bool:
+        """确认漫画目录下每个章节都有实际图片，避免半成品缓存被当成完整缓存"""
+        if folder is None:
+            return False
+        chapters = list(chapters or [])
+        if not chapters:
+            return self._album_dir_has_images(folder)
+        for photo in chapters:
+            if self._chapter_dir(photo, folder) is None:
+                return False
+        return True
+
+    @staticmethod
+    def _looks_like_chapter_album(album) -> bool:
+        """识别上游把章节 ID 当漫画 ID 返回的畸形 album 对象。
+
+        API 对章节 ID 会返回 name=zip 文件名、authors/tags=['filename']
+        且章节列表为父漫画的畸形数据。用这个特征提前给出可操作提示，
+        避免 jmv/jmlist 展示错乱字段。
+        """
+        if album is None:
+            return False
+        authors = [str(x).strip().lower() for x in (getattr(album, "authors", []) or [])]
+        tags = [str(x).strip().lower() for x in (getattr(album, "tags", []) or [])]
+        return (authors and all(x == "filename" for x in authors)) or (
+            tags and all(x == "filename" for x in tags)
+        )
 
     def _load_history(self):
         """加载下载历史，结构是 {user_id: [历史列表]}"""
@@ -609,6 +701,16 @@ class JmComicPlugin(Star):
     def _safe_filename(self, name, max_len=60):
         """生成安全的文件名：敏感词转拼音并去掉非法字符"""
         name = self._safe_text(name) or ''
+        # 章节名本身可能带 .zip/.pdf 等后缀，避免生成 .zip.zip / .zip.pdf
+        while True:
+            stripped = re.sub(
+                r"(?i)\.(?:zip|pdf|rar|7z|jpg|jpeg|png|webp|gif|mp4|mkv|epub|txt)$",
+                "",
+                name.strip(),
+            )
+            if stripped == name:
+                break
+            name = stripped
         for ch in '\\/:*?"<>|\n\r\t':
             name = name.replace(ch, '_')
         return name.strip()[:max_len] or 'untitled'
@@ -1220,7 +1322,7 @@ class JmComicPlugin(Star):
         return f"{title}_第{index:03d}章"
 
     def _chapter_file_stem(self, photo, index, folder=None, album_title=""):
-        """单章文件：JM章节ID_漫画标题_章节标题"""
+        """单章文件：JM章节ID_章节标题（不再拼接漫画标题）"""
         title = self._safe_text(getattr(photo, "name", ""), self.convert_title) or ""
         if not title and folder is not None:
             # 章节列表里标题可能为空，用实际目录名兜底（去掉 P{id}_ 前缀）
@@ -1230,22 +1332,30 @@ class JmComicPlugin(Star):
                 folder_name = folder_name[len(prefix):]
             title = self._safe_text(folder_name, self.convert_title) or ""
         title = self._safe_filename(title or f"第{index}章", 40)
-        manga_title = ""
-        if album_title:
-            manga_title = self._safe_filename(
-                self._safe_text(album_title, self.convert_title), 25
-            )
-        parts = [f"JM{getattr(photo, 'photo_id', index)}"]
-        if manga_title and manga_title != title:
-            parts.append(manga_title)
-        parts.append(title)
-        return "_".join(parts)
+        return f"JM{getattr(photo, 'photo_id', index)}_{title}"
 
-    def _group_file_stem(self, album_id, album_title, start, end):
-        """多章合并文件：JM漫画ID_漫画标题_起始-结束"""
-        album_title = self._safe_text(album_title, self.convert_title) or "album"
-        album_title = self._safe_filename(album_title, 25)
-        return f"JM{album_id}_{album_title}_{start:03d}-{end:03d}"
+    def _group_file_stem(self, album_id, album_title, indexes):
+        """多章合并文件：JM漫画ID_章节号列表（不再拼接漫画标题）。
+
+        连续章节用 031-035；非连续章节用 031,035,040，避免把实际
+        只含三章的文件标成 031-040。
+        """
+        values = sorted({int(x) for x in indexes})
+        index_text = self._format_index_token(values)
+        return f"JM{album_id}_{index_text}"
+
+    def _format_index_token(self, indexes):
+        """把章节号格式化为 031-035 / 031,035,040"""
+        parts = []
+        for token in self._format_index_ranges(indexes).split(","):
+            if not token:
+                continue
+            if "-" in token:
+                start, end = token.split("-", 1)
+                parts.append(f"{int(start):03d}-{int(end):03d}")
+            else:
+                parts.append(f"{int(token):03d}")
+        return ",".join(parts) or "000"
 
     def _file_stem_for_entries(self, entries, album_id, album_title):
         """按页段生成文件名；页段带 _P起始-结束，多个页段分别标注章节号"""
@@ -1256,10 +1366,8 @@ class JmComicPlugin(Star):
                 stem += f"_P{unit.start:03d}-{unit.end:03d}"
             return stem
 
-        first_unit = entries[0][0]
-        last_unit = entries[-1][0]
         stem = self._group_file_stem(
-            album_id, album_title, first_unit.index, last_unit.index
+            album_id, album_title, [unit.index for unit, _folder, _images in entries]
         )
         partials = [unit for unit, _folder, _images in entries if unit.partial]
         if len(partials) == 1:
@@ -1280,45 +1388,84 @@ class JmComicPlugin(Star):
             arc_dir += f"_P{unit.start:03d}-{unit.end:03d}"
         return arc_dir
 
-    async def _download_album_progress(self, event, album_id, holder):
-        """下载整本并推送进度，结果写入 holder['dir'] / holder['duration']"""
+    async def _download_album_progress(self, event, album_id, holder, chapters=None):
+        """下载整本并推送进度，结果写入 holder['dir'] / holder['duration']。
+
+        - 只有所有章节都已有图片时才跳过下载，避免半成品缓存产出残缺 PDF；
+        - 图片/CDN 瞬时失败时自动重试，已下载图片会复用缓存；
+        - 重试后仍有失败时，允许发送已完成章节，并由上层报告部分失败。
+        """
         folder = self._find_album_dir(album_id)
-        if folder is not None:
+        if folder is not None and self._album_cache_complete(folder, chapters):
             holder["dir"] = folder
             holder["duration"] = 0.0
             yield self._plain(event, f"📦 JM{album_id} 已有缓存，跳过下载")
             return
+        if folder is not None:
+            yield self._plain(event,
+                f"📦 JM{album_id} 缓存不完整，将只补下缺失章节/图片..."
+            )
 
-        ProgressDownloader._progress.pop(str(album_id), None)
-        task = asyncio.create_task(
-            jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
-        )
-        last_pct = -1
-        try:
-            while not task.done():
-                await asyncio.sleep(3)
-                prog = ProgressDownloader._progress.get(str(album_id))
-                if prog and prog["total"] > 0 and not prog["finished"]:
-                    pct = int(prog["done"] / prog["total"] * 100)
-                    if pct != last_pct and pct < 100:
-                        last_pct = pct
-                        yield self._plain(event, f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
-        except asyncio.CancelledError:
-            # 用户执行 /jmstop 时，把底层整本下载任务一起取消
-            if not task.done():
-                task.cancel()
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            ProgressDownloader._progress.pop(str(album_id), None)
+            task = asyncio.create_task(
+                jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
+            )
+            last_pct = -1
             try:
-                await task
-            except BaseException:
-                pass
-            raise
+                while not task.done():
+                    await asyncio.sleep(3)
+                    prog = ProgressDownloader._progress.get(str(album_id))
+                    if prog and prog["total"] > 0 and not prog["finished"]:
+                        pct = int(prog["done"] / prog["total"] * 100)
+                        if pct != last_pct and pct < 100:
+                            last_pct = pct
+                            yield self._plain(event, f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
+            except asyncio.CancelledError:
+                # 用户执行 /jmstop 时，把底层整本下载任务一起取消
+                if not task.done():
+                    task.cancel()
+                try:
+                    await task
+                except BaseException:
+                    pass
+                raise
 
-        result = task.result()
-        folder = self._find_album_dir(album_id)
-        holder["dir"] = folder
-        holder["duration"] = float(getattr(result, "duration", 0) or 0)
-        if folder is None:
-            yield self._plain(event, "⚠️ 下载完成但找不到漫画目录")
+            try:
+                result = task.result()
+            except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
+                folder = self._find_album_dir(album_id)
+                if attempt < attempts:
+                    yield self._plain(event,
+                        f"⚠️ 第{attempt}次下载有图片失败（{type(e).__name__}），"
+                        "正在重试，已下载图片会复用缓存..."
+                    )
+                    await asyncio.sleep(3)
+                    continue
+                if folder is not None and self._album_dir_has_images(folder):
+                    holder["dir"] = folder
+                    holder["duration"] = 0.0
+                    holder["partial"] = True
+                    yield self._plain(event,
+                        "⚠️ 重试后仍有图片下载失败，先发送已完成章节；"
+                        "缺失图片已保留缓存，稍后重跑命令可继续补齐。"
+                    )
+                    return
+                raise
+
+            folder = self._find_album_dir(album_id)
+            holder["dir"] = folder
+            holder["duration"] = float(getattr(result, "duration", 0) or 0)
+            if folder is None:
+                yield self._plain(event, "⚠️ 下载完成但找不到漫画目录")
+            elif chapters and not self._album_cache_complete(folder, chapters):
+                holder["partial"] = True
+                yield self._plain(event,
+                    "⚠️ 下载结束但仍有章节缺失，将先发送已完成章节；"
+                    "稍后重跑命令可继续补齐。"
+                )
+            return
 
     async def _ensure_photo_downloaded(self, photo, album_dir=None):
         """确保单章已下载，返回 (目录, 耗时)"""
@@ -1326,7 +1473,14 @@ class JmComicPlugin(Star):
         if folder is not None:
             return folder, 0.0
 
-        result = await jmcomic.download_photo_async(photo.photo_id, self.option)
+        try:
+            result = await jmcomic.download_photo_async(photo.photo_id, self.option)
+        except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
+            folder = self._chapter_dir(photo, album_dir)
+            if folder is not None and self._album_dir_has_images(folder):
+                logger.warning(f"第{getattr(photo, 'photo_id', '')}章部分图片失败，先使用已下载图片: {e}")
+                return folder, 0.0
+            raise
         detail = getattr(result, "detail", photo)
         if getattr(detail, "from_album", None) is None and getattr(photo, "from_album", None) is not None:
             detail.from_album = photo.from_album
@@ -1347,6 +1501,45 @@ class JmComicPlugin(Star):
             50: ["🚨 50本了兄弟！建议今天到此为止，明天再看"],
         }
         return mapping.get(int(count), [])
+
+    @staticmethod
+    def _add_sent_ranges(sent_ranges, photo_id, start, end):
+        """记录本次批量已经发送的章节页段，并合并相邻/重叠区间"""
+        key = str(photo_id)
+        ranges = sent_ranges.setdefault(key, [])
+        ranges.append((int(start), int(end)))
+        ranges.sort()
+        merged = []
+        for item_start, item_end in ranges:
+            if merged and item_start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], item_end))
+            else:
+                merged.append((item_start, item_end))
+        sent_ranges[key] = merged
+
+    @staticmethod
+    def _range_covered(sent_ranges, photo_id, start, end):
+        for item_start, item_end in sent_ranges.get(str(photo_id), []):
+            if item_start <= start and item_end >= end:
+                return True
+        return False
+
+    def _filter_duplicate_selections(self, selected, album_dir, sent_ranges):
+        """过滤本批次中已经发送过的章节/页段，避免批量目标重复发同一文件"""
+        result = []
+        skipped = []
+        for index, photo, page_range in selected:
+            total = len(self._chapter_image_paths(photo, album_dir))
+            if total <= 0:
+                result.append((index, photo, page_range))
+                continue
+            start = int(page_range[0]) if page_range else 1
+            end = int(page_range[1]) if page_range and page_range[1] is not None else total
+            if self._range_covered(sent_ranges, getattr(photo, "photo_id", index), start, end):
+                skipped.append(index)
+                continue
+            result.append((index, photo, page_range))
+        return result, skipped
 
     async def _run_download(self, event, target_str, output_format,
                             chapter_expr=None):
@@ -1383,12 +1576,13 @@ class JmComicPlugin(Star):
         total_files = 0
         total_bytes = 0
         quota_stopped = False
+        sent_ranges = {}
 
         for target_index, (raw, prefix, target_id) in enumerate(targets):
             target_label = f"[{target_index + 1}/{len(targets)}] JM{target_id}"
             yield self._plain(
                 event,
-                f"⬇️ 开始下载 JM{target_id}，📦 共 1 个目标，输出格式：{fmt_label}。",
+                f"⬇️ 开始下载 JM{target_id}，📦 共 {len(targets)} 个目标，输出格式：{fmt_label}。",
             )
             try:
                 target = await self._resolve_target(client, raw)
@@ -1460,7 +1654,9 @@ class JmComicPlugin(Star):
             if kind == "album" and not chapter_expr:
                 holder = {}
                 try:
-                    async for message in self._download_album_progress(event, target_id, holder):
+                    async for message in self._download_album_progress(
+                        event, target_id, holder, chapters=chapters
+                    ):
                         yield message
                 except Exception as e:
                     failed.append(raw)
@@ -1498,9 +1694,21 @@ class JmComicPlugin(Star):
             selected, range_notes = self._normalize_selected_ranges(selected, album_dir)
             if range_notes:
                 yield self._plain(event, "⚠️ 页码提示：" + "；".join(range_notes))
+            selected, duplicate_indexes = self._filter_duplicate_selections(
+                selected, album_dir, sent_ranges
+            )
+            if duplicate_indexes:
+                yield self._plain(
+                    event,
+                    f"ℹ️ {target_label} 第{self._format_index_ranges(duplicate_indexes)}章"
+                    "已在本批次发送过，跳过重复文件"
+                )
             if not selected:
-                failed.append(raw)
-                yield self._plain(event, f"⚠️ {target_label} 没有可用的章节页段")
+                if duplicate_indexes:
+                    success += 1
+                else:
+                    failed.append(raw)
+                    yield self._plain(event, f"⚠️ {target_label} 没有可用的章节页段")
                 continue
 
             # PDF：整章优先，单章超限按页切；ZIP：章数 + 页数双上限
@@ -1615,6 +1823,11 @@ class JmComicPlugin(Star):
                 self._record_file_send()
                 total_files += 1
                 target_sent += 1
+                for unit, _folder, _images in chapter_entries:
+                    self._add_sent_ranges(
+                        sent_ranges, getattr(unit.photo, "photo_id", unit.index),
+                        unit.start, unit.end,
+                    )
                 total_bytes += output_path.stat().st_size
                 yield self._chain(event, [
                     Comp.Plain(f"📎 {output_path.name} ({size_mb:.1f}MB)\n"),
@@ -1704,6 +1917,7 @@ class JmComicPlugin(Star):
 
         order_name = self.order_map.get(order_by, order_by)
         display_keyword = self._safe_text(keyword, self.convert_title)
+        no_result_text = f"没有找到与「{display_keyword}」相关的漫画，请换个关键词试试"
         yield self._plain(event, f"🔍 {title_prefix}{display_keyword}（{order_name}，第{qq_page}页）...")
 
         try:
@@ -1740,12 +1954,29 @@ class JmComicPlugin(Star):
             end = start + PER_QQ_PAGE
             page_items = all_items[start:end]
 
+            # 上游 API 对超大页码会 clamp 到最后一页，不能只看返回是否为空。
+            total_int = None
+            if total is not None:
+                try:
+                    total_int = int(total)
+                except (TypeError, ValueError):
+                    total_int = None
+            if total_int is not None and total_int <= 0:
+                yield self._plain(event, no_result_text)
+                return
+            if total_int is not None:
+                max_page = math.ceil(total_int / PER_QQ_PAGE)
+                if qq_page > max_page:
+                    yield self._plain(event,
+                        f"第{qq_page}页没有更多结果了（共{total_int}条，最多{max_page}页）"
+                    )
+                    return
+
             if not page_items:
-                if total:
-                    max_page = math.ceil(int(total) / PER_QQ_PAGE)
-                    yield self._plain(event, f"第{qq_page}页没有更多结果了（共{total}条，最多{max_page}页）")
-                else:
+                if total_int is not None:
                     yield self._plain(event, f"第{qq_page}页没有更多结果了")
+                else:
+                    yield self._plain(event, no_result_text)
                 return
 
             results = []
@@ -1758,9 +1989,10 @@ class JmComicPlugin(Star):
                 results.append(f"{global_index}. [JM{aid}] {item_title}{tag_str}")
 
             reply = f"{title_prefix}：{display_keyword}（{order_name}）\n"
-            range_text = f"第{qq_page}页，第{start+1}-{start+len(page_items)}条"
-            if total is not None:
-                range_text += f"，共{total}条"
+            global_start = (qq_page - 1) * PER_QQ_PAGE
+            range_text = f"第{qq_page}页，第{global_start + 1}-{global_start + len(page_items)}条"
+            if total_int is not None:
+                range_text += f"，共{total_int}条"
             reply += range_text + "\n\n" + "\n".join(results)
             reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
 
@@ -1850,6 +2082,13 @@ class JmComicPlugin(Star):
             client = self._new_logged_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
+            if self._looks_like_chapter_album(album):
+                yield self._plain(event,
+                    f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
+                    f"请用 /jm {album_id} 下载该章节；章节所属漫画可用 /jmv <漫画id> 查看。"
+                )
+                return
+
             chapters = list(album) if hasattr(album, '__iter__') else []
             authors = getattr(album, 'authors', [])
             works = getattr(album, 'works', [])
@@ -1882,6 +2121,11 @@ class JmComicPlugin(Star):
             tag_str = join_values(tags, self.convert_tags)
 
             sep = "━━━━━━━━━━━━━━━"
+            pub_text = display_date(pub_date)
+            update_text = display_date(update_date)
+            if update_text == "未知" and pub_text != "未知":
+                # API 不提供 update_date 时退回发布日期，避免所有漫画都显示“未知”
+                update_text = pub_text
             lines = [
                 sep,
                 f"  📖 标题:  {title}",
@@ -1890,8 +2134,9 @@ class JmComicPlugin(Star):
             if '-author' not in options:
                 lines.append(f"  ✍️ 作者:  {author_str}")
             lines.append(sep)
-            lines.append(f"  📅 发布日期:  {display_date(pub_date)}")
-            lines.append(f"  📅 更新日期:  {display_date(update_date)}")
+            lines.append(f"  📅 发布日期:  {pub_text}")
+            if update_text != "未知":
+                lines.append(f"  📅 更新日期:  {update_text}")
             lines.append(f"  📄 总页数:    {page_count if page_count else '未知'}")
             lines.append(f"  👀 观看:      {views or '未知'}")
             lines.append(f"  ❤️ 点赞:      {likes or '未知'}")
@@ -1977,13 +2222,20 @@ class JmComicPlugin(Star):
         try:
             client = self._new_logged_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
+
+            if self._looks_like_chapter_album(album):
+                yield self._plain(event,
+                    f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
+                    f"请用 /jm {album_id} 下载该章节；章节所属漫画可用 /jmv <漫画id> 查看。"
+                )
+                return
+
             chapters = list(album) if hasattr(album, '__iter__') else []
 
             if not chapters:
                 yield self._plain(event,
                     f"⚠️ JM{album_id} 没有章节列表。\n"
-                    "如果这是章节ID，请用 /jm <章节id> 下载；"
-                    "想看所属漫画可以用 /jmv <章节id> 试着查一下。"
+                    "请检查 ID 是否正确；如果是章节ID，请用 /jm <章节id> 下载。"
                 )
                 return
 
@@ -2057,7 +2309,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.3\n"
+                "📖 漫画站插件 帮助 v0.7.4\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -2913,6 +3165,15 @@ class JmComicPlugin(Star):
         try:
             client = self._new_logged_client()
 
+            # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
+            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            if self._looks_like_chapter_album(album):
+                yield self._plain(event,
+                    f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
+                    f"章节ID不能查评论，请用 /jm {album_id} 下载。"
+                )
+                return
+
             # 超页检测：如果已知总页数且超过，直接提示（避免API返回重复内容）
             comment_cache_key = f"comment_pages_{album_id}"
             known_max_page = getattr(self, '_comment_page_cache', {}).get(comment_cache_key)
@@ -2929,6 +3190,11 @@ class JmComicPlugin(Star):
                 if not hasattr(self, '_comment_page_cache'):
                     self._comment_page_cache = {}
                 self._comment_page_cache[comment_cache_key] = page_count
+
+            # 0 条评论不是“超页”，优先显示自然文案
+            if page_count == 0:
+                yield self._plain(event, "还没有评论")
+                return
 
             # 请求页码超过总页数时，上游会重复返回第一页内容，这里直接拦截
             if page_count is not None and page_num > page_count:
