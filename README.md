@@ -25,9 +25,9 @@
 ### 依赖要求
 
 - **jmcomic >= 2.7.9**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
-- **img2pdf >= 0.5.1**（PDF 合成优先使用，降低大文件内存占用；缺失时自动回退 reportlab/Pillow）
+- **img2pdf >= 0.5.1 / reportlab >= 4.0.0**（PDF 合成优先 img2pdf，失败时 reportlab 逐页写入，最后回退 Pillow；用于降低大文件内存占用）
 - 版本能力说明：评论翻页需 2.7.3+，下载耗时统计需 2.7.4+，删除收藏需 2.7.6+，每日签到需 2.7.7+
-- 如版本过低，在 AstrBot 后端 Python 环境执行：`pip install -U jmcomic img2pdf`
+- 如版本过低，在 AstrBot 后端 Python 环境执行：`pip install -U jmcomic img2pdf reportlab`
 
 ### 客户端类型说明
 
