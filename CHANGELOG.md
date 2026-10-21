@@ -8,13 +8,13 @@
 - 新增 `progress_step` 配置（0=关闭，默认 10），避免快下载刷屏，也避免慢下载长时间无消息
 
 ### ✨ 新增
-- ZIP 可选密码：配置 `zip_password` 后使用 pyzipper AES-256 加密，留空保持普通 ZIP；切换密码配置时会自动重建旧 ZIP 缓存，避免误发未加密文件
+- 请求级域名重试：接入 jmcomic 内置 `advanced_retry`，同步请求按历史失败次数排序域名并轮询切换；整本下载保留原有 3 次外层任务重试，已下载图片继续复用缓存
 - HTTP/SOCKS5 代理：新增 `use_proxy` / `proxy_url`，映射到 jmcomic 的 `client.postman.meta_data.proxies`；关闭时显式传空代理，避免系统代理环境变量干扰
-- 补充 `pyzipper`、`PySocks` 依赖
+- 补充 `PySocks` 依赖
 
 ### 🔧 变更
 - 版本升级到 `0.7.7`，同步帮助、`metadata.yaml`、README、测试流程和修复日志
-- 新增进度、ZIP 加密、代理相关测试项与回归验证
+- 新增进度、请求级重试、代理相关测试项与回归验证
 
 ## v0.7.6 - 2026-10-21
 

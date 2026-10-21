@@ -18,11 +18,6 @@ import astrbot.api.message_components as Comp
 
 import jmcomic
 from jmcomic import JmMagicConstants, JmModuleConfig
-
-try:
-    import pyzipper
-except ImportError:
-    pyzipper = None
 from jmcomic.jm_exception import (
     MissingAlbumPhotoException,
     RequestRetryAllFailException,
@@ -34,6 +29,15 @@ try:
 except ImportError:
     DownloadCancelledException = None
 from jmcomic.jm_async_downloader import JmAsyncDownloader
+
+
+# 库内置 advanced_retry 的请求级域名轮询配置：
+# 最多轮询 3 轮，单个域名失败 3 次后暂时跳过；按历史失败次数排序，失败多的后置。
+# 整本下载仍由 _download_album_progress 保留 3 次外层任务重试，二者不冲突。
+ADVANCED_RETRY_CONFIG = {
+    "retry_rounds": 3,
+    "retry_domain_max_times": 3,
+}
 
 
 class ProgressDownloader(JmAsyncDownloader):
@@ -195,8 +199,6 @@ class JmComicPlugin(Star):
         # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
         configured_zip_pages = int(self.config.get("zip_page_limit", 300) or 0)
         self.zip_page_limit = min(2000, max(0, configured_zip_pages))
-        # 可选 ZIP 密码：留空表示不加密；非空时使用 pyzipper AES-256
-        self.zip_password = str(self.config.get("zip_password", "") or "").strip()
         # 整本下载进度：每 N% 推送一次，0 表示关闭；60 秒心跳为内部常量
         self.progress_step = min(100, max(0, int(self.config.get("progress_step", 10) or 0)))
         # 代理：use_proxy=false 时显式传空 dict，避免系统代理环境变量干扰
@@ -291,6 +293,16 @@ class JmComicPlugin(Star):
                 "after_init": []
             }
         }
+
+        # 请求级域名轮询放在登录之前，确保登录与后续 client 都应用该策略。
+        # 同步客户端（搜索/详情/单章下载等）走 advanced_retry；
+        # 异步整本下载器自带域名轮询，外层仍有整任务 3 次重试。
+        option_dict["plugins"]["after_init"].append({
+            "plugin": "advanced_retry",
+            "kwargs": {
+                "retry_config": dict(ADVANCED_RETRY_CONFIG)
+            }
+        })
 
         # 如果填了账号密码，加登录插件
         if username and password:
@@ -1818,47 +1830,17 @@ class JmComicPlugin(Star):
                 except Exception:
                     pass
 
-    @staticmethod
-    def _zip_is_encrypted(zip_path: Path):
-        """检查已有 ZIP 是否带加密标记，避免切换密码配置后误用旧缓存。"""
-        try:
-            with zipfile.ZipFile(zip_path) as zipf:
-                return any(bool(info.flag_bits & 0x1) for info in zipf.infolist())
-        except Exception:
-            return False
-
     def _build_zip(self, entries, zip_path: Path, source_dirs=None, info_text=None):
         """按页段打包 ZIP。
 
         entries 为 [(图片列表, 压缩包内目录名或 None)]；目录名为 None 时图片放在根目录。
         info_text 会作为根目录下的“漫画信息.txt”写入。
-        配置了 zip_password 时使用 pyzipper AES-256 加密。
         """
-        password = str(getattr(self, "zip_password", "") or "")
-        # 加密 ZIP 无法可靠判断旧密码是否与当前配置一致，配置密码时总是重建；
-        # 未配置密码时也只复用未加密缓存，避免把旧加密文件当明文发出去。
-        cache_ok = bool(source_dirs) and self._output_fresh(zip_path, source_dirs)
-        if cache_ok and not password and not self._zip_is_encrypted(zip_path):
+        if source_dirs and self._output_fresh(zip_path, source_dirs):
             return zip_path
         if not any(images for images, _ in entries):
             return None
-        if password:
-            if pyzipper is None:
-                raise RuntimeError(
-                    "已配置 ZIP 密码，但当前环境缺少 pyzipper；"
-                    "请执行 pip install pyzipper 后重试"
-                )
-            zipf = pyzipper.AESZipFile(
-                zip_path,
-                "w",
-                compression=pyzipper.ZIP_DEFLATED,
-                encryption=pyzipper.WZ_AES,
-            )
-            zipf.setpassword(password.encode("utf-8"))
-            zipf.setencryption(pyzipper.WZ_AES, nbits=256)
-        else:
-            zipf = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED)
-        with zipf:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             for images, arc_dir in entries:
                 for image in images:
                     arc_name = f"{arc_dir}/{image.name}" if arc_dir else image.name

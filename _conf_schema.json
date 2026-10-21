@@ -105,12 +105,6 @@
     },
     "hint": "PDF 优先整章装册，达到上限就换下一册；单章超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。默认 100 页。"
   },
-  "zip_password": {
-    "type": "string",
-    "default": "",
-    "description": "ZIP 密码",
-    "hint": "留空表示不加密；填写后所有 ZIP 使用 AES-256 加密，打开时需输入此密码。密码只保存在本机插件配置中，不会写入仓库或消息。"
-  },
   "progress_step": {
     "type": "int",
     "default": 10,
