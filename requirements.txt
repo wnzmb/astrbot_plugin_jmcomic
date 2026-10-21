@@ -4,3 +4,5 @@ Pillow>=10.0.0
 zhconv>=1.4.3
 img2pdf>=0.5.1
 reportlab>=4.0.0
+pyzipper>=0.3.6
+PySocks>=1.7.1

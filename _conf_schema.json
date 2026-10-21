@@ -35,7 +35,7 @@
   },
   "owner_ids": {
     "type": "string",
-    "default": "599C39A814DC5D8E004204468C438472",
+    "default": "",
     "description": "号主 ID",
     "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。QQ 官方机器人填 openid，不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
   },
@@ -104,6 +104,35 @@
       "step": 10
     },
     "hint": "PDF 优先整章装册，达到上限就换下一册；单章超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。默认 100 页。"
+  },
+  "zip_password": {
+    "type": "string",
+    "default": "",
+    "description": "ZIP 密码",
+    "hint": "留空表示不加密；填写后所有 ZIP 使用 AES-256 加密，打开时需输入此密码。密码只保存在本机插件配置中，不会写入仓库或消息。"
+  },
+  "progress_step": {
+    "type": "int",
+    "default": 10,
+    "description": "下载进度推送步长",
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 5
+    },
+    "hint": "整本下载每完成约 N% 推送一次进度，默认 10；0 表示关闭进度推送。慢速下载时每 60 秒会额外补发一次心跳，避免长时间没有消息。"
+  },
+  "use_proxy": {
+    "type": "bool",
+    "default": false,
+    "description": "启用代理",
+    "hint": "开启后在访问禁漫站点时使用下方代理地址；关闭时显式直连，避免系统代理环境变量干扰。修改后需重载插件。"
+  },
+  "proxy_url": {
+    "type": "string",
+    "default": "",
+    "description": "代理地址",
+    "hint": "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；启用代理时必填。SOCKS5 需要 PySocks 依赖。"
   },
   "cache_days": {
     "type": "int",

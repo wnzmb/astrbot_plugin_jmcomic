@@ -18,6 +18,11 @@ import astrbot.api.message_components as Comp
 
 import jmcomic
 from jmcomic import JmMagicConstants, JmModuleConfig
+
+try:
+    import pyzipper
+except ImportError:
+    pyzipper = None
 from jmcomic.jm_exception import (
     MissingAlbumPhotoException,
     RequestRetryAllFailException,
@@ -35,29 +40,68 @@ class ProgressDownloader(JmAsyncDownloader):
     """带进度跟踪的下载器，进度存在类变量中按 album_id 隔离
     适配 jmcomic 2.7.9+ 的异步下载器架构（async 上下文管理器 + 异步钩子）
     """
-    # key: album_id, value: {'total': int, 'done': int, 'finished': bool}
+    # key: album_id, value: 进度状态
     _progress = {}
     # key: album_id, value: 本次下载实际写入的漫画根目录（不依赖 dir_rule 命名）
     _album_dirs = {}
 
+    @staticmethod
+    def _album_page_count(album):
+        """优先使用 album.page_count；旧的逐章累加在 before_album 时 page_arr 尚未拉取。"""
+        try:
+            total = int(getattr(album, "page_count", 0) or 0)
+        except (TypeError, ValueError):
+            total = 0
+        if total > 0:
+            return total
+        # 兜底：若调用方已经预取过 page_arr，仍可累加出总数
+        for photo in album:
+            total += len(getattr(photo, "page_arr", None) or [])
+        return max(0, total)
+
     async def before_album(self, album):
         await super().before_album(album)
-        total = 0
-        for photo in album:
-            if photo.page_arr:
-                total += len(photo.page_arr)
+        try:
+            photo_total = len(album)
+        except Exception:
+            photo_total = 0
         ProgressDownloader._progress[str(album.album_id)] = {
-            'total': total,
+            'total': self._album_page_count(album),
             'done': 0,
             'finished': False,
+            'photo_total': photo_total,
+            'photo_done': 0,
+            'current_photo': 0,
+            'current_name': '',
         }
+
+    async def before_photo(self, photo):
+        await super().before_photo(photo)
+        try:
+            state = ProgressDownloader._progress.get(str(photo.album_id))
+            if state is None:
+                return
+            state['photo_done'] += 1
+            try:
+                state['current_photo'] = int(getattr(photo, 'index', 0) or state['photo_done'])
+            except (TypeError, ValueError):
+                state['current_photo'] = state['photo_done']
+            state['current_name'] = str(getattr(photo, 'name', '') or '')
+            # album.page_count 不可用时，至少用已预取章节补一个可见的进度分母
+            if state['total'] <= 0:
+                state['total'] += len(getattr(photo, 'page_arr', None) or [])
+        except Exception:
+            pass
 
     async def after_image(self, image, img_save_path):
         await super().after_image(image, img_save_path)
         try:
             album_id = str(image.from_photo.album_id)
-            if album_id in ProgressDownloader._progress:
-                ProgressDownloader._progress[album_id]['done'] += 1
+            state = ProgressDownloader._progress.get(album_id)
+            if state is not None:
+                state['done'] += 1
+                if state['total'] > 0:
+                    state['done'] = min(state['done'], state['total'])
 
             # 记录实际保存目录：取 base_dir 下的第一层目录，无论 dir_rule 怎么配都能定位
             base_dir = Path(self.option.dir_rule.base_dir).resolve()
@@ -70,8 +114,11 @@ class ProgressDownloader(JmAsyncDownloader):
     async def after_album(self, album):
         await super().after_album(album)
         aid = str(album.album_id)
-        if aid in ProgressDownloader._progress:
-            ProgressDownloader._progress[aid]['finished'] = True
+        state = ProgressDownloader._progress.get(aid)
+        if state is not None:
+            state['finished'] = True
+            if state['total'] > 0:
+                state['done'] = state['total']
 
 
 class PageUnit(NamedTuple):
@@ -92,7 +139,7 @@ class PageUnit(NamedTuple):
         return self.start > 1 or self.end < self.total
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.6")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.7")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -148,6 +195,16 @@ class JmComicPlugin(Star):
         # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
         configured_zip_pages = int(self.config.get("zip_page_limit", 300) or 0)
         self.zip_page_limit = min(2000, max(0, configured_zip_pages))
+        # 可选 ZIP 密码：留空表示不加密；非空时使用 pyzipper AES-256
+        self.zip_password = str(self.config.get("zip_password", "") or "").strip()
+        # 整本下载进度：每 N% 推送一次，0 表示关闭；60 秒心跳为内部常量
+        self.progress_step = min(100, max(0, int(self.config.get("progress_step", 10) or 0)))
+        # 代理：use_proxy=false 时显式传空 dict，避免系统代理环境变量干扰
+        proxy_url = str(self.config.get("proxy_url", "") or "").strip()
+        self.use_proxy = bool(self.config.get("use_proxy", False)) and bool(proxy_url)
+        if bool(self.config.get("use_proxy", False)) and not proxy_url:
+            logger.warning("已开启 use_proxy，但 proxy_url 为空，本次按直连处理")
+        self.proxy_url = proxy_url
         self.send_state_file = self.data_dir / "send_limits.json"
         self._id_type_cache = {}
         # 当前用户正在执行的下载任务，供 /jmstop 取消
@@ -196,6 +253,9 @@ class JmComicPlugin(Star):
             # HTML 域名未配置时交给 jmcomic 自动获取，避免在代码里硬编码
             domain_conf = {"html": custom_domains}
 
+        # 明确覆盖系统代理：未启用时传空 dict，启用时 http/https 都走同一代理。
+        proxy_map = {"http": self.proxy_url, "https": self.proxy_url} if self.use_proxy else {}
+
         option_dict = {
             "log": False,
             "client": {
@@ -205,7 +265,7 @@ class JmComicPlugin(Star):
                 "domain": domain_conf,
                 "postman": {
                     "meta_data": {
-                        "proxies": None,
+                        "proxies": proxy_map,
                         "timeout": 15
                     }
                 }
@@ -262,7 +322,10 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.7.6，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(
+            f"JMComic 插件初始化完成 v0.7.7，客户端: {self.client_type.upper()}，"
+            f"镜像站: {custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
+        )
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -399,7 +462,11 @@ class JmComicPlugin(Star):
         if isinstance(e, MissingAlbumPhotoException):
             return f"❌ 查无此本/章节，请检查 ID 是否正确"
         elif isinstance(e, RequestRetryAllFailException):
-            return f"❌ 网络请求全部失败，可尝试在插件配置中更换域名\n{e}"
+            return (
+                "❌ 网络请求全部失败，可尝试在插件配置中更换域名；"
+                "如已启用代理，请检查 proxy_url 是否可连通\n"
+                f"{e}"
+            )
         elif isinstance(e, PartialDownloadFailedException):
             return f"⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
         elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
@@ -1751,17 +1818,47 @@ class JmComicPlugin(Star):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _zip_is_encrypted(zip_path: Path):
+        """检查已有 ZIP 是否带加密标记，避免切换密码配置后误用旧缓存。"""
+        try:
+            with zipfile.ZipFile(zip_path) as zipf:
+                return any(bool(info.flag_bits & 0x1) for info in zipf.infolist())
+        except Exception:
+            return False
+
     def _build_zip(self, entries, zip_path: Path, source_dirs=None, info_text=None):
         """按页段打包 ZIP。
 
         entries 为 [(图片列表, 压缩包内目录名或 None)]；目录名为 None 时图片放在根目录。
         info_text 会作为根目录下的“漫画信息.txt”写入。
+        配置了 zip_password 时使用 pyzipper AES-256 加密。
         """
-        if source_dirs and self._output_fresh(zip_path, source_dirs):
+        password = str(getattr(self, "zip_password", "") or "")
+        # 加密 ZIP 无法可靠判断旧密码是否与当前配置一致，配置密码时总是重建；
+        # 未配置密码时也只复用未加密缓存，避免把旧加密文件当明文发出去。
+        cache_ok = bool(source_dirs) and self._output_fresh(zip_path, source_dirs)
+        if cache_ok and not password and not self._zip_is_encrypted(zip_path):
             return zip_path
         if not any(images for images, _ in entries):
             return None
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        if password:
+            if pyzipper is None:
+                raise RuntimeError(
+                    "已配置 ZIP 密码，但当前环境缺少 pyzipper；"
+                    "请执行 pip install pyzipper 后重试"
+                )
+            zipf = pyzipper.AESZipFile(
+                zip_path,
+                "w",
+                compression=pyzipper.ZIP_DEFLATED,
+                encryption=pyzipper.WZ_AES,
+            )
+            zipf.setpassword(password.encode("utf-8"))
+            zipf.setencryption(pyzipper.WZ_AES, nbits=256)
+        else:
+            zipf = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED)
+        with zipf:
             for images, arc_dir in entries:
                 for image in images:
                     arc_name = f"{arc_dir}/{image.name}" if arc_dir else image.name
@@ -1851,6 +1948,26 @@ class JmComicPlugin(Star):
             arc_dir += f"_P{unit.start:03d}-{unit.end:03d}"
         return arc_dir
 
+    @staticmethod
+    def _progress_bar(pct, width=10):
+        pct = max(0, min(100, int(pct)))
+        filled = int(round(pct * width / 100))
+        return "█" * filled + "░" * (width - filled)
+
+    def _progress_message(self, prog, pct):
+        total = max(0, int(prog.get("total") or 0))
+        done = max(0, int(prog.get("done") or 0))
+        chapter = ""
+        photo_total = max(0, int(prog.get("photo_total") or 0))
+        photo_no = max(0, int(prog.get("current_photo") or 0))
+        if photo_total > 0 and photo_no > 0:
+            photo_no = min(photo_no, photo_total)
+            chapter = f" 第{photo_no}/{photo_total}章"
+        return (
+            f"⏳ 下载进度：{pct}% "
+            f"[{self._progress_bar(pct)}] ({done}/{total}张){chapter}"
+        )
+
     async def _download_album_progress(self, event, album_id, holder, chapters=None):
         """下载整本并推送进度，结果写入 holder['dir'] / holder['duration']。
 
@@ -1875,16 +1992,34 @@ class JmComicPlugin(Star):
             task = asyncio.create_task(
                 jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
             )
+            progress_step = int(getattr(self, "progress_step", 10) or 0)
             last_pct = -1
+            next_step = progress_step
+            last_sent_at = time.monotonic()
             try:
                 while not task.done():
                     await asyncio.sleep(3)
+                    if progress_step <= 0:
+                        continue
                     prog = ProgressDownloader._progress.get(str(album_id))
-                    if prog and prog["total"] > 0 and not prog["finished"]:
-                        pct = int(prog["done"] / prog["total"] * 100)
-                        if pct != last_pct and pct < 100:
-                            last_pct = pct
-                            yield self._plain(event, f"⏳ 下载进度：{pct}% ({prog['done']}/{prog['total']}张)")
+                    if not prog or prog.get("finished"):
+                        continue
+                    total = max(0, int(prog.get("total") or 0))
+                    done = max(0, int(prog.get("done") or 0))
+                    if total <= 0:
+                        continue
+                    pct = min(100, max(0, int(done * 100 / total)))
+                    now = time.monotonic()
+                    step_due = pct >= next_step and pct < 100 and pct != last_pct
+                    heartbeat_due = (now - last_sent_at) >= 60 and pct < 100
+                    if not (step_due or heartbeat_due):
+                        continue
+                    message = self._progress_message(prog, pct)
+                    logger.info(message)
+                    yield self._plain(event, message)
+                    last_pct = pct
+                    last_sent_at = now
+                    next_step = ((pct // progress_step) + 1) * progress_step
             except asyncio.CancelledError:
                 # 用户执行 /jmstop 时，把底层整本下载任务一起取消
                 if not task.done():
@@ -2841,7 +2976,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.6\n"
+                "📖 漫画站插件 帮助 v0.7.7\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"

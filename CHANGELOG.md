@@ -1,5 +1,21 @@
 # 更新日志
 
+## v0.7.7 - 2026-10-21
+
+### 🐛 修复
+- 修复整本下载进度推送从未生效：`before_album` 改用 `album.page_count` 作为总页数，不再依赖此时尚未拉取的章节 `page_arr`
+- 进度改为默认每约 10% 推送一次，并增加 60 秒慢速心跳；消息带 10 格进度条和章节粒度（如 `第3/4章`）
+- 新增 `progress_step` 配置（0=关闭，默认 10），避免快下载刷屏，也避免慢下载长时间无消息
+
+### ✨ 新增
+- ZIP 可选密码：配置 `zip_password` 后使用 pyzipper AES-256 加密，留空保持普通 ZIP；切换密码配置时会自动重建旧 ZIP 缓存，避免误发未加密文件
+- HTTP/SOCKS5 代理：新增 `use_proxy` / `proxy_url`，映射到 jmcomic 的 `client.postman.meta_data.proxies`；关闭时显式传空代理，避免系统代理环境变量干扰
+- 补充 `pyzipper`、`PySocks` 依赖
+
+### 🔧 变更
+- 版本升级到 `0.7.7`，同步帮助、`metadata.yaml`、README、测试流程和修复日志
+- 新增进度、ZIP 加密、代理相关测试项与回归验证
+
 ## v0.7.6 - 2026-10-21
 
 ### 🐛 修复
