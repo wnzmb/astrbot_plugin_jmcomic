@@ -2,8 +2,8 @@ name: astrbot_plugin_jmcomic
 display_name: 漫画下载插件
 short_desc: 漫画搜索、详情、评论、PDF/ZIP 下载、签到、收藏
 desc: |
-  漫画站助手插件，基于 jmcomic 库开发，支持全站/作者/标签/角色/原作搜索、详情查看、评论翻页、下载 PDF/ZIP、按章节选择、PDF 按页数分册（单章超限自动切分）、ZIP 按章数+页数合并、页段续传、批量下载、`/jmphoto` 单章节兼容别名、`/jmstop` 停止下载、每日签到、收藏夹管理、排行榜、随机推荐、下载历史分页、号主权限、QQ 文件限额、敏感词自动转拼音、简繁自动转换等功能，所有参数均可在配置页自定义。
-version: 0.7.4
+  漫画站助手插件，基于 jmcomic 库开发，支持全站/作者/标签/角色/原作搜索、详情查看、评论翻页、下载 PDF/ZIP、按章节选择、PDF 按页数分册（单章超限自动切分）、ZIP 按章数+页数合并、页段续传、批量下载、`/jmphoto` 单章节兼容别名、`/jmstop` 停止下载、每日签到、收藏夹管理、排行榜、随机推荐、下载历史分页、号主权限、QQ 文件限额、敏感词自动转拼音、简繁自动转换等功能，所有参数均可在配置页自定义。v0.7.5 起缓存目录只保留 ID，标题写入 metadata.json，并在 ZIP/PDF 中附带标题信息。
+version: 0.7.5
 author: wnzmb
 repo: https://github.com/wnzmb/astrbot_plugin_jmcomic
 astrbot_version: ">=4.0.0"

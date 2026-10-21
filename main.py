@@ -17,7 +17,7 @@ from astrbot.api import logger, AstrBotConfig
 import astrbot.api.message_components as Comp
 
 import jmcomic
-from jmcomic import DirRule, JmMagicConstants, JmModuleConfig
+from jmcomic import JmMagicConstants, JmModuleConfig
 from jmcomic.jm_exception import (
     MissingAlbumPhotoException,
     RequestRetryAllFailException,
@@ -74,64 +74,6 @@ class ProgressDownloader(JmAsyncDownloader):
             ProgressDownloader._progress[aid]['finished'] = True
 
 
-class SafeDirRule(DirRule):
-    """限制缓存目录长度，避免 Windows MAX_PATH 260 导致长标题章节无法下载。
-
-    jmcomic 默认直接用完整漫画/章节标题做目录名，标题很长时会叠加超过
-    Windows 路径上限。这里只在最终路径过长时截断目录组件，并保留
-    ``JM{id}_`` / ``P{id}_`` 前缀，插件仍能按 ID 精确找到缓存。
-    """
-
-    MAX_TOTAL_PATH = 235
-    RESERVED_FOR_FILENAME = 24
-
-    @staticmethod
-    def _shorten_component(name, max_len):
-        name = str(name or "").rstrip(" .")
-        if len(name) <= max_len:
-            return name
-        match = re.match(r"^(?:JM|P)\d+_", name)
-        prefix = match.group(0) if match else ""
-        available = max_len - len(prefix)
-        if available < 1:
-            return prefix or name[:max_len].rstrip(" .") or "_"
-        return (prefix + name[len(prefix):len(prefix) + available]).rstrip(" .") or "_"
-
-    def _fit_path(self, path):
-        path = os.path.normpath(str(path))
-        base = os.path.normpath(str(self.base_dir))
-        try:
-            rel = os.path.relpath(path, base)
-        except ValueError:
-            return path
-        if rel == "." or rel.startswith(".." + os.sep) or rel == "..":
-            return path
-
-        parts = [part for part in rel.split(os.sep) if part]
-        if not parts:
-            return path
-        budget = max(24, self.MAX_TOTAL_PATH - len(base) - 1 - self.RESERVED_FOR_FILENAME)
-        # 固定按“漫画目录 + 章节目录”两段分配，保证单独计算专辑根目录和
-        # 计算章节图片目录时，对专辑目录名的截断结果一致。
-        max_each = max(12, min(60, budget // 2))
-        new_parts = [self._shorten_component(part, max_each) for part in parts]
-
-        # 组件单独截断后仍可能超长，继续压缩最长的组件。
-        while len(os.path.join(base, *new_parts)) > self.MAX_TOTAL_PATH:
-            index = max(range(len(new_parts)), key=lambda i: len(new_parts[i]))
-            component = new_parts[index]
-            match = re.match(r"^(?:JM|P)\d+_", component)
-            prefix_len = len(match.group(0)) if match else 0
-            if len(component) <= prefix_len + 4:
-                break
-            new_parts[index] = component[:-4].rstrip(" .") or "_"
-        return os.path.join(base, *new_parts)
-
-    def apply_rule_to_path(self, album, photo, only_album_rules=False):
-        path = super().apply_rule_to_path(album, photo, only_album_rules)
-        return self._fit_path(path)
-
-
 class PageUnit(NamedTuple):
     """一个待打包的页段：章节内第 start~end 页（1 起，含两端）"""
 
@@ -150,7 +92,7 @@ class PageUnit(NamedTuple):
         return self.start > 1 or self.end < self.total
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.4")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.5")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -280,9 +222,9 @@ class JmComicPlugin(Star):
                 }
             },
             "dir_rule": {
-                # 目录名带漫画ID：JM{id}_{标题}/章节名，便于按ID精确查找缓存
-                # 默认规则 Bd_Pname 只有标题，会导致下载完成后无法按ID定位目录
-                "rule": "Bd/JM{Aid}_{Atitle}/P{Pid}_{Pname}",
+                # 缓存目录只保留 ID，标题写入 metadata.json，避免长标题触发
+                # Windows MAX_PATH；目录结构：JM{漫画id}/P{章节id}/图片
+                "rule": "Bd/JM{Aid}/P{Pid}",
                 "normalize_zh": "zh-cn"
             },
             "plugins": {
@@ -305,12 +247,6 @@ class JmComicPlugin(Star):
         option_str = yaml.dump(option_dict, allow_unicode=True)
         self.option = jmcomic.create_option_by_str(option_str)
         self.option.dir_rule.base_dir = str(self.download_base_dir)
-        # 长标题会让完整路径超过 Windows MAX_PATH，替换为限长目录规则
-        self.option.dir_rule = SafeDirRule(
-            rule=self.option.dir_rule.rule_dsl,
-            base_dir=self.option.dir_rule.base_dir,
-            normalize_zh=self.option.dir_rule.normalize_zh,
-        )
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self._cached_client = None
@@ -326,7 +262,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.7.4，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.7.5，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -551,18 +487,335 @@ class JmComicPlugin(Star):
             if folder.is_dir() and self._album_dir_has_images(folder):
                 return folder
 
-        # 2) 按 JM{id}_ 前缀匹配（当前 dir_rule 生成的目录名）
+        # 2) 新版目录是精确的 JM{id}；旧版标题目录作为兜底
         candidates = []
-        for folder in self.download_base_dir.glob(f"JM{album_id}_*"):
-            if folder.is_dir() and folder.resolve() != base_resolved:
-                candidates.append(folder)
-        if candidates:
-            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            for folder in candidates:
-                if self._album_dir_has_images(folder):
-                    return folder
+        exact = self.download_base_dir / f"JM{album_id}"
+        if exact.is_dir() and exact.resolve() != base_resolved:
+            candidates.append(exact)
+        legacy = [
+            folder for folder in self.download_base_dir.glob(f"JM{album_id}_*")
+            if folder.is_dir() and folder.resolve() != base_resolved
+        ]
+        legacy.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        candidates.extend(legacy)
+        for folder in candidates:
+            if self._album_dir_has_images(folder):
+                return folder
 
         return None
+
+    @staticmethod
+    def _metadata_file(folder):
+        return Path(folder) / "metadata.json" if folder is not None else None
+
+    def _read_metadata(self, folder):
+        """读取缓存目录的 metadata.json，失败时返回空字典"""
+        if folder is None:
+            return {}
+        try:
+            data = json.loads(self._metadata_file(folder).read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_metadata(self, folder, data):
+        """原子写入 metadata.json，失败不影响下载和打包"""
+        if folder is None:
+            return False
+        try:
+            folder = Path(folder)
+            folder.mkdir(parents=True, exist_ok=True)
+            path = self._metadata_file(folder)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+            return True
+        except Exception as e:
+            logger.warning(f"写入缓存元数据失败: {e}")
+            return False
+
+    @staticmethod
+    def _text_list(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        return [str(item) for item in value if str(item).strip()]
+
+    def _album_display_title(self, album, album_dir=None):
+        name = getattr(album, "name", "") if album is not None else ""
+        if name:
+            return self._safe_text(str(name), self.convert_title)
+        metadata = self._read_metadata(album_dir)
+        return metadata.get("title_display") or metadata.get("title") or ""
+
+    def _chapter_display_title(self, photo, index=1, folder=None, album_dir=None):
+        name = getattr(photo, "name", "") if photo is not None else ""
+        if name:
+            return self._safe_text(str(name), self.convert_title)
+
+        metadata = self._read_metadata(folder)
+        if metadata.get("title_display") or metadata.get("title"):
+            return metadata.get("title_display") or metadata.get("title")
+
+        photo_id = str(getattr(photo, "photo_id", "") or "")
+        album_metadata = self._read_metadata(album_dir)
+        for item in album_metadata.get("chapters", []) or []:
+            if photo_id and str(item.get("photo_id", "")) == photo_id:
+                return item.get("title_display") or item.get("title") or f"第{index}章"
+        return f"第{index}章"
+
+    def _save_target_metadata(self, album, album_id, chapters, album_dir,
+                              selected_photos=None):
+        """把漫画/章节标题写入缓存目录，供打包和缺标题兜底使用"""
+        if album_dir is None:
+            return
+        all_chapters = list(chapters or [])
+        if album is not None:
+            try:
+                expanded = list(album)
+                if expanded:
+                    all_chapters = expanded
+            except Exception:
+                pass
+
+        album_id = str(
+            album_id or getattr(album, "album_id", "") or ""
+        )
+        existing = self._read_metadata(album_dir)
+        title = str(
+            (getattr(album, "name", "") if album is not None else "")
+            or existing.get("title", "")
+            or ""
+        )
+        title_display = self._safe_text(title, self.convert_title) if title else ""
+        authors = self._text_list(
+            (getattr(album, "authors", None) if album is not None else None)
+            or existing.get("authors", [])
+        )
+        tags = self._text_list(
+            (getattr(album, "tags", None) if album is not None else None)
+            or existing.get("tags", [])
+        )
+        author_display = [
+            self._safe_text(item, self.convert_author) for item in authors
+        ]
+        tag_display = [
+            self._safe_text(item, self.convert_tags) for item in tags
+        ]
+
+        existing_chapters = {
+            str(item.get("photo_id", "")): item
+            for item in (existing.get("chapters", []) or [])
+            if isinstance(item, dict)
+        }
+        chapter_items = []
+        for index, photo in enumerate(all_chapters, 1):
+            photo_title = str(getattr(photo, "name", "") or "")
+            photo_id = str(getattr(photo, "photo_id", "") or "")
+            previous = existing_chapters.get(photo_id, {})
+            chapter_title_display = (
+                self._safe_text(photo_title, self.convert_title)
+                if photo_title else previous.get("title_display", "")
+            )
+            item = {
+                "photo_id": photo_id,
+                "index": index,
+                "title": photo_title or previous.get("title", ""),
+                "title_display": chapter_title_display,
+            }
+            if previous.get("page_count") is not None:
+                item["page_count"] = previous["page_count"]
+            chapter_items.append(item)
+
+        album_data = {
+            "schema": 1,
+            "album_id": album_id,
+            "title": title,
+            "title_display": title_display,
+            "authors": authors,
+            "authors_display": author_display,
+            "tags": tags,
+            "tags_display": tag_display,
+            "chapters": chapter_items,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        # 先写入专辑信息，章节标题为空时 _chapter_display_title 可从
+        # 专辑元数据里回退；写入章节元数据后再补全专辑里的标题。
+        self._write_metadata(album_dir, album_data)
+
+        if selected_photos is None:
+            selected_photos = all_chapters
+        seen = set()
+        album_items_changed = False
+        for photo in selected_photos:
+            photo_id = str(getattr(photo, "photo_id", "") or "")
+            if not photo_id or photo_id in seen:
+                continue
+            seen.add(photo_id)
+            folder = self._chapter_dir(photo, album_dir)
+            if folder is None:
+                continue
+            index = next(
+                (
+                    item["index"] for item in chapter_items
+                    if item.get("photo_id") == photo_id
+                ),
+                1,
+            )
+            chapter_title = self._chapter_display_title(
+                photo, index, folder, album_dir
+            )
+            page_arr = getattr(photo, "page_arr", None)
+            page_count = len(page_arr) if page_arr else len(self._chapter_images(folder))
+            raw_chapter_title = str(getattr(photo, "name", "") or "")
+            self._write_metadata(folder, {
+                "schema": 1,
+                "album_id": album_id,
+                "album_title": title,
+                "album_title_display": title_display,
+                "photo_id": photo_id,
+                "index": index,
+                "title": raw_chapter_title,
+                "title_display": chapter_title,
+                "page_count": page_count,
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            for item in chapter_items:
+                if item.get("photo_id") != photo_id:
+                    continue
+                if raw_chapter_title:
+                    item["title"] = raw_chapter_title
+                item["title_display"] = chapter_title
+                item["page_count"] = page_count
+                album_items_changed = True
+                break
+
+        if album_items_changed:
+            album_data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+            self._write_metadata(album_dir, album_data)
+
+    def _unit_metadata_index(self, unit, folder):
+        try:
+            index = int(self._read_metadata(folder).get("index") or unit.index)
+            return index if index > 0 else unit.index
+        except Exception:
+            return unit.index
+
+    def _album_info_text(self, album, album_id, album_dir, chapter_entries):
+        """生成放进 ZIP 的可读漫画信息文件"""
+        metadata = self._read_metadata(album_dir)
+        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
+        authors = self._text_list(
+            (getattr(album, "authors", None) if album is not None else None)
+            or metadata.get("authors", [])
+        )
+        tags = self._text_list(
+            (getattr(album, "tags", None) if album is not None else None)
+            or metadata.get("tags", [])
+        )
+        lines = [
+            "漫画信息",
+            f"标题：{title}",
+            f"ID：JM{album_id}",
+        ]
+        if authors:
+            lines.append("作者：" + "、".join(
+                self._safe_text(item, self.convert_author) for item in authors
+            ))
+        if tags:
+            lines.append("标签：" + "、".join(
+                self._safe_text(item, self.convert_tags) for item in tags
+            ))
+        lines.append("")
+        lines.append("本次包含：")
+        if not chapter_entries:
+            lines.append("- 无可用章节")
+        for unit, folder, _images in chapter_entries:
+            chapter_index = self._unit_metadata_index(unit, folder)
+            chapter_title = self._chapter_display_title(
+                unit.photo, chapter_index, folder, album_dir
+            )
+            page_suffix = (
+                f"（第{unit.start}-{unit.end}页）" if unit.partial else ""
+            )
+            photo_id = getattr(unit.photo, "photo_id", chapter_index)
+            lines.append(
+                f"- 第{chapter_index:03d}章 {chapter_title}{page_suffix}  [JM{photo_id}]"
+            )
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _album_cover_text(self, album, album_id, album_dir, chapter_entries):
+        """PDF 首页封面用的精简信息，避免章节过多时溢出"""
+        metadata = self._read_metadata(album_dir)
+        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
+        authors = self._text_list(
+            (getattr(album, "authors", None) if album is not None else None)
+            or metadata.get("authors", [])
+        )
+        tags = self._text_list(
+            (getattr(album, "tags", None) if album is not None else None)
+            or metadata.get("tags", [])
+        )
+        indexes = [
+            self._unit_metadata_index(unit, folder)
+            for unit, folder, _images in chapter_entries
+        ]
+        lines = [title, f"JM{album_id}"]
+        if authors:
+            lines.append("作者：" + "、".join(
+                self._safe_text(item, self.convert_author) for item in authors
+            ))
+        if tags:
+            lines.append("标签：" + "、".join(
+                self._safe_text(item, self.convert_tags) for item in tags
+            ))
+        if indexes:
+            index_text = self._format_index_token(indexes)
+            lines.append(f"本次包含：第{index_text}章（共{len(set(indexes))}章）")
+            partial_entries = [
+                entry for entry in chapter_entries if entry[0].partial
+            ]
+            if partial_entries:
+                lines.append("含页段：" + "、".join(
+                    f"第{self._unit_metadata_index(unit, folder):03d}章 "
+                    f"{unit.start}-{unit.end}页"
+                    for unit, folder, _images in partial_entries[:6]
+                ))
+        return "\n".join(lines)
+
+    def _pdf_metadata(self, album, album_id, album_dir, chapter_entries):
+        metadata = self._read_metadata(album_dir)
+        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
+        authors = self._text_list(
+            (getattr(album, "authors", None) if album is not None else None)
+            or metadata.get("authors", [])
+        )
+        tags = self._text_list(
+            (getattr(album, "tags", None) if album is not None else None)
+            or metadata.get("tags", [])
+        )
+        indexes = [
+            self._unit_metadata_index(unit, folder)
+            for unit, folder, _images in chapter_entries
+        ]
+        result = {
+            "title": title,
+            "subject": f"JM{album_id}"
+            + (f" 第{self._format_index_token(indexes)}章" if indexes else ""),
+        }
+        if authors:
+            result["author"] = "、".join(
+                self._safe_text(item, self.convert_author) for item in authors
+            )
+        if tags:
+            result["keywords"] = "、".join(
+                self._safe_text(item, self.convert_tags) for item in tags
+            )
+        return result
 
     def _album_cache_complete(self, folder: Path, chapters) -> bool:
         """确认漫画目录下每个章节都有实际图片，避免半成品缓存被当成完整缓存"""
@@ -876,6 +1129,13 @@ class JmComicPlugin(Star):
 
         photo = photo_probe or await asyncio.to_thread(client.get_photo_detail, target_id)
         album = getattr(photo, "from_album", None)
+        if album is None:
+            parent_id = str(getattr(photo, "album_id", "") or "")
+            if parent_id and parent_id != target_id:
+                try:
+                    album = await asyncio.to_thread(client.get_album_detail, parent_id)
+                except Exception:
+                    album = None
         return {
             "kind": "photo",
             "id": str(target_id),
@@ -1175,8 +1435,11 @@ class JmComicPlugin(Star):
             photo_id = str(getattr(photo, "photo_id", "") or "")
             try:
                 subs = [sub for sub in album_dir.iterdir() if sub.is_dir()]
-                # 1) 章节ID前缀最可靠
+                # 1) 新版精确 P{id}，旧版 P{id}_标题 兼容
                 if photo_id:
+                    exact = album_dir / f"P{photo_id}"
+                    if exact.is_dir() and self._album_dir_has_images(exact):
+                        return exact
                     for sub in subs:
                         if sub.name.startswith(f"P{photo_id}_") and self._album_dir_has_images(sub):
                             return sub
@@ -1201,108 +1464,221 @@ class JmComicPlugin(Star):
         return sorted(files, key=lambda p: p.name)
 
     def _output_fresh(self, output: Path, source_dirs):
-        """输出文件存在且不比源图片旧时直接复用"""
+        """输出文件存在且不比源图片/元数据旧时直接复用"""
         if not output.exists():
             return False
         try:
             out_mtime = output.stat().st_mtime
-            for folder in source_dirs:
-                for item in folder.rglob("*"):
+            for source in source_dirs:
+                path = Path(source)
+                files = [path] if path.is_file() else path.rglob("*")
+                for item in files:
                     if item.is_file() and item.stat().st_mtime > out_mtime:
                         return False
             return True
         except Exception:
             return False
 
-    def _build_pdf(self, image_paths, pdf_path: Path, source_dirs=None):
+    def _find_cover_font(self, size):
+        from PIL import ImageFont
+        windir = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or r"C:\Windows"
+        candidates = [
+            Path(windir) / "Fonts" / "msyh.ttc",
+            Path(windir) / "Fonts" / "msyhbd.ttc",
+            Path(windir) / "Fonts" / "simhei.ttf",
+            Path(windir) / "Fonts" / "simsun.ttc",
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        ]
+        for font_path in candidates:
+            try:
+                if font_path.is_file():
+                    return ImageFont.truetype(str(font_path), size)
+            except Exception:
+                continue
+        return None
+
+    def _make_cover_image(self, text, cover_path):
+        """用系统 CJK 字体生成 PDF 首页封面；找不到字体时放弃封面"""
+        try:
+            from PIL import Image, ImageDraw
+            title_font = self._find_cover_font(54)
+            body_font = self._find_cover_font(30)
+            if title_font is None or body_font is None:
+                logger.warning("未找到中文字体，跳过 PDF 标题封面")
+                return None
+
+            width, height = 1240, 1754
+            margin = 80
+            image = Image.new("RGB", (width, height), "white")
+            draw = ImageDraw.Draw(image)
+            max_width = width - margin * 2
+
+            def wrap_line(line, font):
+                if not line:
+                    return [""]
+                result = []
+                current = ""
+                for char in line:
+                    if draw.textlength(current + char, font=font) <= max_width:
+                        current += char
+                    else:
+                        result.append(current)
+                        current = char
+                result.append(current)
+                return result
+
+            rendered = []
+            for line_index, line in enumerate(str(text).splitlines()):
+                font = title_font if line_index == 0 else body_font
+                for wrapped in wrap_line(line, font):
+                    rendered.append((wrapped, font))
+
+            y = margin
+            for line, font in rendered:
+                if y + font.size > height - margin:
+                    break
+                draw.text((margin, y), line, font=font, fill=(25, 25, 25))
+                y += font.size + (18 if font is title_font else 12)
+                if font is title_font and y < height:
+                    draw.line((margin, y - 8, width - margin, y - 8), fill=(180, 180, 180), width=2)
+                    y += 12
+
+            image.save(cover_path, "JPEG", quality=95)
+            return cover_path
+        except Exception as e:
+            logger.warning(f"生成 PDF 封面失败: {e}")
+            return None
+
+    def _build_pdf(self, image_paths, pdf_path: Path, source_dirs=None,
+                   metadata=None, cover_text=None):
         """把图片按顺序合成一个 PDF。
 
         优先使用 img2pdf（不把所有图片解码进内存，能显著降低大文件崩溃概率），
         不可用或遇到不支持的图片格式时回退到 reportlab/Pillow。
+        cover_text 不为空时，在首页插入一张标题封面（不计入图片页上限）。
         """
         if source_dirs and self._output_fresh(pdf_path, source_dirs):
             return pdf_path
         if not image_paths:
             return None
 
+        cover_path = None
+        if cover_text:
+            cover_path = pdf_path.with_name(pdf_path.stem + "_cover.jpg")
+            if not self._make_cover_image(cover_text, cover_path):
+                cover_path = None
+        if cover_path is not None:
+            image_paths = [cover_path] + list(image_paths)
+        metadata = metadata or {}
+
         try:
-            import img2pdf
-        except ImportError:
-            img2pdf = None
-        if img2pdf is not None:
             try:
-                pdf_bytes = img2pdf.convert([str(path) for path in image_paths])
-                pdf_path.write_bytes(pdf_bytes)
-                return pdf_path
-            except Exception as e:
-                logger.warning(f"img2pdf 合成失败，尝试 reportlab: {e}")
-
-        # reportlab 逐页写入，不把所有图片同时解码到内存里
-        try:
-            from PIL import Image
-            from reportlab.pdfgen import canvas
-            from reportlab.lib.utils import ImageReader
-
-            pdf_canvas = canvas.Canvas(str(pdf_path))
-            wrote_page = False
-            for image_path in image_paths:
+                import img2pdf
+            except ImportError:
+                img2pdf = None
+            if img2pdf is not None:
                 try:
-                    with Image.open(image_path) as source:
-                        width, height = source.size
-                        if source.mode not in ("RGB", "L"):
-                            source = source.convert("RGB")
-                        buffer = io.BytesIO()
-                        source.save(buffer, format="JPEG", quality=95)
-                        buffer.seek(0)
-                    # 按 100dpi 换算成 PDF 点，避免页面尺寸过大
-                    page_width = width * 0.72
-                    page_height = height * 0.72
-                    pdf_canvas.setPageSize((page_width, page_height))
-                    pdf_canvas.drawImage(
-                        ImageReader(buffer), 0, 0,
-                        width=page_width, height=page_height,
+                    kwargs = {
+                        key: str(metadata[key])
+                        for key in ("title", "author", "subject", "keywords")
+                        if metadata.get(key)
+                    }
+                    # 元数据写入失败时不再“无元数据重试”，直接交给
+                    # reportlab 分支，优先保证 PDF 标题属性存在。
+                    pdf_bytes = img2pdf.convert(
+                        [str(path) for path in image_paths], **kwargs
                     )
-                    pdf_canvas.showPage()
-                    wrote_page = True
-                    buffer.close()
-                except Exception:
-                    continue
-            if wrote_page:
+                    pdf_path.write_bytes(pdf_bytes)
+                    return pdf_path
+                except Exception as e:
+                    logger.warning(f"img2pdf 合成失败，尝试 reportlab: {e}")
+
+            # reportlab 逐页写入，不把所有图片同时解码到内存里
+            try:
+                from PIL import Image
+                from reportlab.pdfgen import canvas
+                from reportlab.lib.utils import ImageReader
+
+                pdf_canvas = canvas.Canvas(str(pdf_path))
+                for setter, key in (
+                    ("setTitle", "title"),
+                    ("setAuthor", "author"),
+                    ("setSubject", "subject"),
+                    ("setKeywords", "keywords"),
+                ):
+                    try:
+                        if metadata.get(key):
+                            getattr(pdf_canvas, setter)(str(metadata[key]))
+                    except Exception:
+                        pass
+                wrote_page = False
+                for image_path in image_paths:
+                    try:
+                        with Image.open(image_path) as source:
+                            width, height = source.size
+                            if source.mode not in ("RGB", "L"):
+                                source = source.convert("RGB")
+                            buffer = io.BytesIO()
+                            source.save(buffer, format="JPEG", quality=95)
+                            buffer.seek(0)
+                        # 按 100dpi 换算成 PDF 点，避免页面尺寸过大
+                        page_width = width * 0.72
+                        page_height = height * 0.72
+                        pdf_canvas.setPageSize((page_width, page_height))
+                        pdf_canvas.drawImage(
+                            ImageReader(buffer), 0, 0,
+                            width=page_width, height=page_height,
+                        )
+                        pdf_canvas.showPage()
+                        wrote_page = True
+                        buffer.close()
+                    except Exception:
+                        continue
+                if wrote_page:
+                    pdf_canvas.save()
+                    return pdf_path
                 pdf_canvas.save()
+            except Exception as e:
+                logger.warning(f"reportlab 合成失败，回退 Pillow: {e}")
+
+            from PIL import Image
+
+            images = []
+            try:
+                for image_path in image_paths:
+                    try:
+                        images.append(Image.open(image_path).convert("RGB"))
+                    except Exception:
+                        continue
+                if not images:
+                    return None
+                images[0].save(
+                    pdf_path,
+                    save_all=True,
+                    append_images=images[1:],
+                    resolution=100.0,
+                )
                 return pdf_path
-            pdf_canvas.save()
-        except Exception as e:
-            logger.warning(f"reportlab 合成失败，回退 Pillow: {e}")
-
-        from PIL import Image
-
-        images = []
-        try:
-            for image_path in image_paths:
-                try:
-                    images.append(Image.open(image_path).convert("RGB"))
-                except Exception:
-                    continue
-            if not images:
-                return None
-            images[0].save(
-                pdf_path,
-                save_all=True,
-                append_images=images[1:],
-                resolution=100.0,
-            )
-            return pdf_path
+            finally:
+                for image in images:
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
         finally:
-            for image in images:
+            if cover_path is not None:
                 try:
-                    image.close()
+                    cover_path.unlink(missing_ok=True)
                 except Exception:
                     pass
 
-    def _build_zip(self, entries, zip_path: Path, source_dirs=None):
+    def _build_zip(self, entries, zip_path: Path, source_dirs=None, info_text=None):
         """按页段打包 ZIP。
 
         entries 为 [(图片列表, 压缩包内目录名或 None)]；目录名为 None 时图片放在根目录。
+        info_text 会作为根目录下的“漫画信息.txt”写入。
         """
         if source_dirs and self._output_fresh(zip_path, source_dirs):
             return zip_path
@@ -1313,30 +1689,19 @@ class JmComicPlugin(Star):
                 for image in images:
                     arc_name = f"{arc_dir}/{image.name}" if arc_dir else image.name
                     zipf.write(image, arc_name)
+            if info_text:
+                zipf.writestr("漫画信息.txt", str(info_text).encode("utf-8"))
         return zip_path
 
-    def _zip_chapter_folder(self, photo, index, folder=None):
+    def _zip_chapter_folder(self, photo, index, folder=None, album_dir=None):
         """ZIP 内章节目录名：章节标题_第XXX章（章节号放在最后，便于排序）"""
-        title = self._safe_text(getattr(photo, "name", ""), self.convert_title) or ""
-        if not title and folder is not None:
-            folder_name = Path(folder).name
-            prefix = f"P{getattr(photo, 'photo_id', '')}_"
-            if folder_name.startswith(prefix):
-                folder_name = folder_name[len(prefix):]
-            title = self._safe_text(folder_name, self.convert_title) or ""
+        title = self._chapter_display_title(photo, index, folder, album_dir)
         title = self._safe_filename(title or f"第{index}章", 60)
         return f"{title}_第{index:03d}章"
 
-    def _chapter_file_stem(self, photo, index, folder=None, album_title=""):
+    def _chapter_file_stem(self, photo, index, folder=None, album_title="", album_dir=None):
         """单章文件：JM章节ID_章节标题（不再拼接漫画标题）"""
-        title = self._safe_text(getattr(photo, "name", ""), self.convert_title) or ""
-        if not title and folder is not None:
-            # 章节列表里标题可能为空，用实际目录名兜底（去掉 P{id}_ 前缀）
-            folder_name = Path(folder).name
-            prefix = f"P{getattr(photo, 'photo_id', '')}_"
-            if folder_name.startswith(prefix):
-                folder_name = folder_name[len(prefix):]
-            title = self._safe_text(folder_name, self.convert_title) or ""
+        title = self._chapter_display_title(photo, index, folder, album_dir)
         title = self._safe_filename(title or f"第{index}章", 40)
         return f"JM{getattr(photo, 'photo_id', index)}_{title}"
 
@@ -1363,11 +1728,13 @@ class JmComicPlugin(Star):
                 parts.append(f"{int(token):03d}")
         return ",".join(parts) or "000"
 
-    def _file_stem_for_entries(self, entries, album_id, album_title):
+    def _file_stem_for_entries(self, entries, album_id, album_title, album_dir=None):
         """按页段生成文件名；页段带 _P起始-结束，多个页段分别标注章节号"""
         if len(entries) == 1:
             unit, folder, _ = entries[0]
-            stem = self._chapter_file_stem(unit.photo, unit.index, folder, album_title)
+            stem = self._chapter_file_stem(
+                unit.photo, unit.index, folder, album_title, album_dir
+            )
             if unit.partial:
                 stem += f"_P{unit.start:03d}-{unit.end:03d}"
             return stem
@@ -1385,11 +1752,11 @@ class JmComicPlugin(Star):
                 stem += f"_{unit.index:03d}P{unit.start:03d}-{unit.end:03d}"
         return stem
 
-    def _zip_arc_dir(self, unit, folder, multi):
+    def _zip_arc_dir(self, unit, folder, multi, album_dir=None):
         """ZIP 内章节目录名；单章直接放根目录"""
         if not multi:
             return None
-        arc_dir = self._zip_chapter_folder(unit.photo, unit.index, folder)
+        arc_dir = self._zip_chapter_folder(unit.photo, unit.index, folder, album_dir)
         if unit.partial:
             arc_dir += f"_P{unit.start:03d}-{unit.end:03d}"
         return arc_dir
@@ -1648,11 +2015,12 @@ class JmComicPlugin(Star):
             album = target.get("album")
             album_id = str(
                 getattr(album, "album_id", "")
+                or getattr(target.get("photo"), "album_id", "")
                 or (target_id if kind == "album" else "")
             )
             album_title = getattr(album, "name", "") if album is not None else ""
             album_dir = None
-            # 选章/单章先找已有漫画目录，便于复用旧缓存（新版目录带 P{章节id}_ 前缀）
+            # 选章/单章先找已有漫画目录，便于复用已有图片缓存
             if album_id and not (kind == "album" and not chapter_expr):
                 album_dir = self._find_album_dir(album_id)
 
@@ -1696,6 +2064,18 @@ class JmComicPlugin(Star):
                         "已有缓存，跳过下载"
                     )
 
+            if album_id and album_dir is None:
+                album_dir = self._find_album_dir(album_id)
+            if album_dir is not None:
+                self._save_target_metadata(
+                    album,
+                    album_id,
+                    chapters,
+                    album_dir,
+                    selected_photos=[photo for _index, photo, _range in selected],
+                )
+                album_title = self._album_display_title(album, album_dir) or album_title
+
             # 下载完成后按实际图片数夹取页码，再规划输出文件
             selected, range_notes = self._normalize_selected_ranges(selected, album_dir)
             if range_notes:
@@ -1726,8 +2106,11 @@ class JmComicPlugin(Star):
             target_sizes = []
             target_sent = 0
             target_failed = 0
+            pdf_cover_pending = output_format == "pdf"
             if kind == "photo":
-                target_title = getattr(target.get("photo"), "name", "") or target_id
+                target_title = self._chapter_display_title(
+                    target.get("photo"), 1, None, album_dir
+                ) or target_id
             else:
                 target_title = album_title or target_id
 
@@ -1785,26 +2168,44 @@ class JmComicPlugin(Star):
                 )
 
                 source_dirs = [folder for _, folder, _ in chapter_entries]
+                album_metadata_path = self._metadata_file(album_dir)
+                if album_metadata_path is not None and album_metadata_path.is_file():
+                    source_dirs = source_dirs + [album_metadata_path]
                 image_paths = [
                     image for _, _, images in chapter_entries for image in images
                 ]
+                info_text = self._album_info_text(
+                    album, album_id, album_dir, chapter_entries
+                )
+                cover_text = None
+                pdf_metadata = None
+                if output_format == "pdf":
+                    pdf_metadata = self._pdf_metadata(
+                        album, album_id, album_dir, chapter_entries
+                    )
+                    if pdf_cover_pending:
+                        cover_text = self._album_cover_text(
+                            album, album_id, album_dir, chapter_entries
+                        )
                 try:
                     stem = self._file_stem_for_entries(
-                        chapter_entries, album_id, album_title
+                        chapter_entries, album_id, album_title, album_dir
                     )
                     output_path = self.zip_base_dir / f"{stem}.{output_format}"
                     if output_format == "pdf":
                         built = await asyncio.to_thread(
-                            self._build_pdf, image_paths, output_path, source_dirs
+                            self._build_pdf, image_paths, output_path, source_dirs,
+                            pdf_metadata, cover_text,
                         )
                     else:
                         multi = len(chapter_entries) > 1
                         zip_entries = [
-                            (images, self._zip_arc_dir(unit, folder, multi))
+                            (images, self._zip_arc_dir(unit, folder, multi, album_dir))
                             for unit, folder, images in chapter_entries
                         ]
                         built = await asyncio.to_thread(
-                            self._build_zip, zip_entries, output_path, source_dirs
+                            self._build_zip, zip_entries, output_path, source_dirs,
+                            info_text,
                         )
                 except Exception as e:
                     yield self._plain(event, f"❌ 生成文件失败：{e}")
@@ -1815,6 +2216,8 @@ class JmComicPlugin(Star):
                     yield self._plain(event, "❌ 生成文件失败（没有可用图片）")
                     target_failed += len(group)
                     continue
+                if output_format == "pdf":
+                    pdf_cover_pending = False
 
                 size_mb = output_path.stat().st_size / 1024 / 1024
                 # 按约 2MB/s 估算 QQ 上传耗时，并计入发送间隔
@@ -2315,7 +2718,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.4\n"
+                "📖 漫画站插件 帮助 v0.7.5\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -2367,7 +2770,8 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
-                "💾 下载缓存：JM{{漫画id}}_{{标题}}，默认保留 {cache_days} 天\n"
+                "💾 下载缓存：JM{{漫画id}}/P{{章节id}}/图片，标题存入 metadata.json，默认保留 {cache_days} 天\n"
+                "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性并在第一册加封面\n"
                 "📄 PDF：每 {pdf_page_limit} 页一册（整章优先，单章超限按页切分）\n"
                 "🗜️ ZIP：最多 {zip_group_size} 章/册，{zip_page_text}\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
