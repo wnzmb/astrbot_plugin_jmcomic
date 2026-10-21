@@ -2,3 +2,4 @@ jmcomic>=2.7.9
 pypinyin>=0.50.0
 Pillow>=10.0.0
 zhconv>=1.4.3
+img2pdf>=0.5.1

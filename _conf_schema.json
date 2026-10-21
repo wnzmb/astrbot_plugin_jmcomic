@@ -72,16 +72,27 @@
     },
     "hint": "搜索结果每页显示的漫画数量。"
   },
-  "pdf_group_size": {
+  "zip_group_size": {
     "type": "int",
     "default": 5,
-    "description": "PDF/ZIP 合并章数",
+    "description": "ZIP 合并章数",
     "slider": {
       "min": 1,
       "max": 50,
       "step": 1
     },
-    "hint": "每 N 章合并成一个 PDF 或 ZIP，默认 5；填 1 表示每章一个。所有多章漫画（含 -c 选章）都按此设置，命令中不再支持 -g。"
+    "hint": "每 N 章合并成一个 ZIP，默认 5；填 1 表示每章一个。多章 ZIP 内的章节目录名会把章节号放在最后，如“标题_第031章”。"
+  },
+  "pdf_page_limit": {
+    "type": "int",
+    "default": 200,
+    "description": "PDF 每册页数上限",
+    "slider": {
+      "min": 1,
+      "max": 2000,
+      "step": 10
+    },
+    "hint": "PDF 按整章累加页数，达到上限就换下一册；单章超过上限时单独成册，不会裁剪章节。默认 200 页。"
   },
   "cache_days": {
     "type": "int",
