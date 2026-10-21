@@ -92,7 +92,7 @@ class PageUnit(NamedTuple):
         return self.start > 1 or self.end < self.total
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.5")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.6")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -262,7 +262,7 @@ class JmComicPlugin(Star):
             'md': '最多评论',
         }
 
-        logger.info(f"JMComic 插件初始化完成 v0.7.5，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
+        logger.info(f"JMComic 插件初始化完成 v0.7.6，客户端: {self.client_type.upper()}，镜像站: {custom_domains}")
 
         # 历史记录文件
         self.history_file = self.data_dir / "history.json"
@@ -834,8 +834,9 @@ class JmComicPlugin(Star):
         """识别上游把章节 ID 当漫画 ID 返回的畸形 album 对象。
 
         API 对章节 ID 会返回 name=zip 文件名、authors/tags=['filename']
-        且章节列表为父漫画的畸形数据。用这个特征提前给出可操作提示，
-        避免 jmv/jmlist 展示错乱字段。
+        且章节列表为父漫画的畸形数据；部分章节 ID（如 1236387）的
+        authors/tags 为空，但首项 photo_id 会变成父漫画 ID。两种特征
+        都用于提前给出可操作提示，避免 jmv/jmlist 展示错乱字段。
         """
         if album is None:
             return False
@@ -847,9 +848,48 @@ class JmComicPlugin(Star):
             tags = [tags]
         authors = [str(x).strip().lower() for x in authors]
         tags = [str(x).strip().lower() for x in tags]
-        return (authors and all(x == "filename" for x in authors)) or (
+        if (authors and all(x == "filename" for x in authors)) or (
             tags and all(x == "filename" for x in tags)
-        )
+        ):
+            return True
+
+        album_id = str(getattr(album, "album_id", "") or "").strip()
+        try:
+            first = next(iter(album))
+        except (TypeError, StopIteration):
+            return False
+        first_id = str(getattr(first, "photo_id", "") or "").strip()
+        return bool(album_id and first_id and first_id != album_id)
+
+    @staticmethod
+    def _chapter_album_parent_id(album, album_id) -> str:
+        """从畸形章节 album 的首项提取父漫画ID。
+
+        API 返回的畸形章节 album 里，第一项通常是父漫画的占位章节，
+        其 photo_id 就是父漫画ID（例如 275013 的首项 photo_id=43164）。
+        """
+        try:
+            first = next(iter(album))
+        except (TypeError, StopIteration):
+            return ""
+        candidate = str(getattr(first, "photo_id", "") or "").strip()
+        if candidate.isdigit() and candidate != str(album_id):
+            return candidate
+        return ""
+
+    async def _resolve_chapter_album_parent(self, client, album, album_id) -> str:
+        """优先从 album 首项取父漫画ID，失败时用 photo 详情兜底"""
+        parent_id = self._chapter_album_parent_id(album, album_id)
+        if parent_id:
+            return parent_id
+        try:
+            photo = await asyncio.to_thread(client.get_photo_detail, album_id)
+        except Exception:
+            return ""
+        parent_id = str(getattr(photo, "album_id", "") or "").strip()
+        if parent_id.isdigit() and parent_id != str(album_id):
+            return parent_id
+        return ""
 
     def _load_history(self):
         """加载下载历史，结构是 {user_id: [历史列表]}"""
@@ -1175,11 +1215,50 @@ class JmComicPlugin(Star):
         notes.append(f"页码 {part} 格式不正确，已忽略")
         return None
 
+    @staticmethod
+    def _merge_page_ranges(ranges):
+        """只合并重叠或相邻的页段，保留不连续区间。
+
+        入参/返回值为 [(起始页, 结束页或None)]；结束页为 None 表示到本章末。
+        """
+        values = []
+        for item in ranges or []:
+            try:
+                start = int(item[0])
+                end = None if item[1] is None else int(item[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if start <= 0:
+                continue
+            if end is not None and end < start:
+                start, end = end, start
+            if start <= 0:
+                continue
+            values.append((start, end))
+        values.sort(key=lambda item: (item[0], item[1] is None))
+
+        merged = []
+        for start, end in values:
+            if not merged:
+                merged.append((start, end))
+                continue
+            last_start, last_end = merged[-1]
+            if last_end is None:
+                # 上一段已经覆盖到本章末，后续页段都被包含
+                continue
+            if start <= last_end + 1:
+                if end is None or end > last_end:
+                    merged[-1] = (last_start, end)
+            else:
+                merged.append((start, end))
+        return merged
+
     def _select_chapters(self, chapters, expr):
-        """解析 -c：2 / 2-4 / 2,5,7 / 5:201-400
+        """解析 -c：2 / 2-4 / 2,5,7 / 5:201-400 / 5:1-5,5:10-15
 
         返回 ([(原序号, photo, 页段或None)], 无效项, 提示)
-        页段为 (起始页, 结束页或None)，页码从 1 开始。
+        页段为 (起始页, 结束页或None)，页码从 1 开始；同一章节的
+        不连续页段会保留为多条记录，便于分别打包。
         """
         all_items = [(i + 1, ch, None) for i, ch in enumerate(chapters)]
         if not expr:
@@ -1212,17 +1291,7 @@ class JmComicPlugin(Star):
                 if value in whole_indexes:
                     notes.append(f"第{value}章已选择整章，忽略其页段 {part}")
                     continue
-                if value in page_ranges:
-                    old_start, old_end = page_ranges[value]
-                    new_start, new_end = page_range
-                    start = min(old_start, new_start)
-                    if old_end is None or new_end is None:
-                        end = None
-                    else:
-                        end = max(old_end, new_end)
-                    page_ranges[value] = (start, end)
-                else:
-                    page_ranges[value] = page_range
+                page_ranges.setdefault(value, []).append(page_range)
                 indexes.add(value)
             elif "-" in part:
                 left, right = part.split("-", 1)
@@ -1260,11 +1329,14 @@ class JmComicPlugin(Star):
 
         selected = []
         for index in sorted(indexes):
-            if 1 <= index <= len(chapters):
-                page_range = None if index in whole_indexes else page_ranges.get(index)
-                selected.append((index, chapters[index - 1], page_range))
-            else:
+            if not 1 <= index <= len(chapters):
                 invalid.append(str(index))
+                continue
+            if index in whole_indexes:
+                selected.append((index, chapters[index - 1], None))
+                continue
+            for page_range in self._merge_page_ranges(page_ranges.get(index, [])):
+                selected.append((index, chapters[index - 1], page_range))
         return selected, invalid, notes
 
     def _chapter_image_paths(self, photo, album_dir=None):
@@ -1363,17 +1435,19 @@ class JmComicPlugin(Star):
         )
 
     def _resume_expr(self, groups):
-        """把剩余分组压缩成 -c 表达式，页段从哪页开始就写哪页"""
+        """把剩余分组压缩成 -c 表达式，页段从哪页开始就写哪页
+
+        同一章节的多个不连续页段必须分别输出，不能把中间未下载的页
+        合并进来。只有重叠或相邻的页段才会合并。
+        """
         info = {}
         order = []
         for group in groups:
             for unit in group:
                 if unit.index not in info:
-                    info[unit.index] = [unit.start, unit.end, unit.total]
+                    info[unit.index] = {"ranges": [], "total": unit.total}
                     order.append(unit.index)
-                else:
-                    info[unit.index][0] = min(info[unit.index][0], unit.start)
-                    info[unit.index][1] = max(info[unit.index][1], unit.end)
+                info[unit.index]["ranges"].append((unit.start, unit.end))
 
         parts = []
         whole = []
@@ -1384,13 +1458,16 @@ class JmComicPlugin(Star):
                 whole.clear()
 
         for index in order:
-            start, end, total = info[index]
-            if start <= 1 and end >= total:
+            total = info[index]["total"]
+            ranges = self._merge_page_ranges(info[index]["ranges"])
+            if any(start <= 1 and end is not None and end >= total
+                   for start, end in ranges):
                 whole.append(index)
                 continue
             flush_whole()
-            end_text = "" if end >= total else f"{end:03d}"
-            parts.append(f"{index}:{start:03d}-{end_text}")
+            for start, end in ranges:
+                end_text = "" if end is None or end >= total else f"{end:03d}"
+                parts.append(f"{index}:{start:03d}-{end_text}")
         flush_whole()
         return ",".join(part for part in parts if part)
 
@@ -1739,6 +1816,19 @@ class JmComicPlugin(Star):
                 stem += f"_P{unit.start:03d}-{unit.end:03d}"
             return stem
 
+        indexes = {unit.index for unit, _folder, _images in entries}
+        if len(indexes) == 1:
+            # 同一章节的多个不连续页段仍属于单章，继续使用章节ID+标题，
+            # 每个页段单独追加 _P起始-结束，避免退化成漫画ID文件名。
+            unit, folder, _ = entries[0]
+            stem = self._chapter_file_stem(
+                unit.photo, unit.index, folder, album_title, album_dir
+            )
+            for unit, _folder, _images in entries:
+                if unit.partial:
+                    stem += f"_P{unit.start:03d}-{unit.end:03d}"
+            return stem
+
         stem = self._group_file_stem(
             album_id, album_title, [unit.index for unit, _folder, _images in entries]
         )
@@ -2043,14 +2133,25 @@ class JmComicPlugin(Star):
                     failed.append(raw)
                     continue
             else:
+                # 同一章节可能有多个不连续页段，下载时按章节去重，
+                # 避免重复请求同一章、并把刚下载的章误报成“已有缓存”。
+                download_items = []
+                seen_photos = set()
+                for original_index, photo, _page_range in selected:
+                    photo_key = str(getattr(photo, "photo_id", original_index))
+                    if photo_key in seen_photos:
+                        continue
+                    seen_photos.add(photo_key)
+                    download_items.append((original_index, photo))
+
                 cached_indexes = []
-                for position, (original_index, photo, _page_range) in enumerate(selected):
+                for position, (original_index, photo) in enumerate(download_items):
                     if self._chapter_dir(photo, album_dir) is not None:
                         cached_indexes.append(original_index)
                         continue
                     yield self._plain(event,
                         f"⬇️ {target_label} 下载第{original_index}章"
-                        f"（{position + 1}/{len(selected)}）..."
+                        f"（{position + 1}/{len(download_items)}）..."
                     )
                     try:
                         await self._ensure_photo_downloaded(photo, album_dir)
@@ -2492,9 +2593,20 @@ class JmComicPlugin(Star):
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
             if self._looks_like_chapter_album(album):
+                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+                if parent_id:
+                    parent_line = (
+                        f"该章节所属漫画：JM{parent_id}\n"
+                        f"请用 /jm {album_id} 下载该章节，或用 /jmv {parent_id} 查看漫画。"
+                    )
+                else:
+                    parent_line = (
+                        f"请用 /jm {album_id} 下载该章节；"
+                        "章节所属漫画ID未能识别，可先执行 /jm 后查看缓存目录。"
+                    )
                 yield self._plain(event,
                     f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
-                    f"请用 /jm {album_id} 下载该章节；章节所属漫画可用 /jmv <漫画id> 查看。"
+                    f"{parent_line}"
                 )
                 return
 
@@ -2633,9 +2745,20 @@ class JmComicPlugin(Star):
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
             if self._looks_like_chapter_album(album):
+                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+                if parent_id:
+                    parent_line = (
+                        f"该章节所属漫画：JM{parent_id}\n"
+                        f"请用 /jm {album_id} 下载该章节，或用 /jmv {parent_id} 查看漫画。"
+                    )
+                else:
+                    parent_line = (
+                        f"请用 /jm {album_id} 下载该章节；"
+                        "章节所属漫画ID未能识别，可先执行 /jm 后查看缓存目录。"
+                    )
                 yield self._plain(event,
                     f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
-                    f"请用 /jm {album_id} 下载该章节；章节所属漫画可用 /jmv <漫画id> 查看。"
+                    f"{parent_line}"
                 )
                 return
 
@@ -2718,7 +2841,7 @@ class JmComicPlugin(Star):
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.5\n"
+                "📖 漫画站插件 帮助 v0.7.6\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -3578,8 +3701,14 @@ class JmComicPlugin(Star):
             # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
             album = await asyncio.to_thread(client.get_album_detail, album_id)
             if self._looks_like_chapter_album(album):
+                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+                parent_line = (
+                    f"该章节所属漫画：JM{parent_id}，可用 /jmv {parent_id} 查看。\n"
+                    if parent_id else ""
+                )
                 yield self._plain(event,
                     f"❌ JM{album_id} 看起来是章节ID，不是漫画ID。\n"
+                    f"{parent_line}"
                     f"章节ID不能查评论，请用 /jm {album_id} 下载。"
                 )
                 return
