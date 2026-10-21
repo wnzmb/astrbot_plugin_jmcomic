@@ -35,7 +35,7 @@
   },
   "owner_ids": {
     "type": "string",
-    "default": "",
+    "default": "599C39A814DC5D8E004204468C438472",
     "description": "号主 ID",
     "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。QQ 官方机器人填 openid，不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
   },
