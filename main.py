@@ -586,8 +586,14 @@ class JmComicPlugin(Star):
         """
         if album is None:
             return False
-        authors = [str(x).strip().lower() for x in (getattr(album, "authors", []) or [])]
-        tags = [str(x).strip().lower() for x in (getattr(album, "tags", []) or [])]
+        authors = getattr(album, "authors", []) or []
+        tags = getattr(album, "tags", []) or []
+        if isinstance(authors, str):
+            authors = [authors]
+        if isinstance(tags, str):
+            tags = [tags]
+        authors = [str(x).strip().lower() for x in authors]
+        tags = [str(x).strip().lower() for x in tags]
         return (authors and all(x == "filename" for x in authors)) or (
             tags and all(x == "filename" for x in tags)
         )
