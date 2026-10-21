@@ -185,15 +185,15 @@ class JmComicPlugin(Star):
         self.tease_enabled = self.config.get("tease_enabled", False)
         self.cache_days = int(self.config.get("cache_days", 7))
         self.comment_count = int(self.config.get("comment_count", 10))
-        self.history_max = max(0, int(self.config.get("history_max", 50) or 0))
+        self.history_max = max(0, int(self.config.get("history_max", 0) or 0))
         self.dual_search = self.config.get("dual_search", True)
 
         # 号主与文件发送限额（方案B：账号类命令只允许号主）
         owner_raw = str(self.config.get("owner_ids", "") or "")
         owner_raw = owner_raw.replace("，", ",").replace(" ", ",").replace("\n", ",").replace("\t", ",")
         self.owner_ids = {x.strip() for x in owner_raw.split(",") if x.strip()}
-        self.daily_file_limit = max(0, int(self.config.get("daily_file_limit", 100) or 0))
-        self.hourly_file_limit = max(0, int(self.config.get("hourly_file_limit", 50) or 0))
+        self.daily_file_limit = max(0, int(self.config.get("daily_file_limit", 0) or 0))
+        self.hourly_file_limit = max(0, int(self.config.get("hourly_file_limit", 0) or 0))
         self.send_interval = max(0.0, float(self.config.get("send_interval", 1.5)))
         # ZIP 按章数合并；PDF 按页数合并，两者互不影响。
         # 旧配置 pdf_group_size 仅作为 ZIP 合并章数的兼容回退。
@@ -201,8 +201,8 @@ class JmComicPlugin(Star):
             self.config.get("zip_group_size", self.config.get("pdf_group_size", 5)) or 0
         )
         self.zip_group_size = min(50, max(1, configured_group or 5))
-        configured_pages = int(self.config.get("pdf_page_limit", 200) or 0)
-        self.pdf_page_limit = min(2000, max(1, configured_pages or 200))
+        configured_pages = int(self.config.get("pdf_page_limit", 100) or 0)
+        self.pdf_page_limit = min(2000, max(1, configured_pages or 100))
         # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
         configured_zip_pages = int(self.config.get("zip_page_limit", 300) or 0)
         self.zip_page_limit = min(2000, max(0, configured_zip_pages))
