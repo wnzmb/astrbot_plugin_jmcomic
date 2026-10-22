@@ -2923,13 +2923,17 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
             # 下载封面并发送；-pic 不发送封面
+            # 封面走文件通道，避免 QQ 官方对图片组件做图像审核导致 40034006
             if '-pic' not in options:
                 cover_path = self.data_dir / f"cover_{album_id}.jpg"
                 try:
                     await asyncio.to_thread(client.download_album_cover, album_id, str(cover_path))
                     if cover_path.exists():
                         yield self._chain(event, [
-                            Comp.Image(file=str(cover_path))
+                            Comp.File(
+                                file=str(cover_path),
+                                name=f"JM{album_id}_封面.jpg",
+                            )
                         ])
                         # 发完就删，不存着
                         cover_path.unlink(missing_ok=True)
