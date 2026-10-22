@@ -1,5 +1,6 @@
 import os
 import io
+import csv
 import asyncio
 import zipfile
 import shutil
@@ -143,7 +144,7 @@ class PageUnit(NamedTuple):
         return self.start > 1 or self.end < self.total
 
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.7")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.8")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -169,6 +170,16 @@ class JmComicPlugin(Star):
         image_threads = int(self.config.get("image_threads", 5))
         self.per_page = int(self.config.get("per_page", 10))
         self.allow_group = self.config.get("allow_group", True)
+        # 群白名单：逗号分隔的群号；为空时沿用 allow_group 的全局开关
+        group_raw = str(self.config.get("enabled_groups", "") or "")
+        group_raw = (
+            group_raw.replace("，", ",").replace(" ", ",")
+            .replace("\n", ",").replace("\t", ",")
+        )
+        self.enabled_groups = {x.strip() for x in group_raw.split(",") if x.strip()}
+        self.numeric_search_as_album = bool(self.config.get("numeric_search_as_album", False))
+        # 订阅更新检查间隔（秒），0 表示关闭后台检查；命令仍可正常增删订阅
+        self.subscribe_interval = max(0, int(self.config.get("subscribe_interval", 3600) or 0))
         self.convert_enabled = self.config.get("convert_enabled", True)
         self.convert_title = self.config.get("convert_title", True)
         self.convert_tags = self.config.get("convert_tags", True)
@@ -211,6 +222,11 @@ class JmComicPlugin(Star):
         self._id_type_cache = {}
         # 当前用户正在执行的下载任务，供 /jmstop 取消
         self._download_tasks: dict[str, set] = {}
+        # 收藏夹导出二次确认：key=(发送者, umo, 操作) -> 首次输入时间
+        self._pending_exports: dict[tuple, float] = {}
+        # 订阅更新后台检查任务
+        self._subscribe_task = None
+        self._subscription_lock = None
 
         # 客户端类型：api（默认，功能全）或 html（支持分类筛选）
         self.client_type = self.config.get("client_type", "api").lower()
@@ -335,7 +351,7 @@ class JmComicPlugin(Star):
         }
 
         logger.info(
-            f"JMComic 插件初始化完成 v0.7.7，客户端: {self.client_type.upper()}，"
+            f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
             f"镜像站: {custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
 
@@ -347,14 +363,31 @@ class JmComicPlugin(Star):
         # 最近一次成功签到的本地记录（API 签到日历更新有延迟时兜底）
         self.checkin_file = self.data_dir / "checkin_state.json"
 
+        # 订阅更新：按会话 umo 保存漫画快照
+        self.subscription_file = self.data_dir / "subscriptions.json"
+        if not self.subscription_file.exists():
+            self.subscription_file.write_text("{}", encoding="utf-8")
+
     def _check_permission(self, event: AstrMessageEvent):
-        """检查群聊权限"""
+        """检查群聊权限：allow_group 总开关 + enabled_groups 白名单"""
+        group_id = event.get_group_id()
+        if not group_id:
+            # 私聊不受群开关和白名单影响
+            return True
         if not self.allow_group:
-            # 群聊会有group_id，私聊没有
-            group_id = event.get_group_id()
-            if group_id:
-                return False
+            return False
+        if self.enabled_groups and str(group_id) not in self.enabled_groups:
+            return False
         return True
+
+    def _permission_denied_text(self, event: AstrMessageEvent) -> str:
+        group_id = event.get_group_id()
+        if group_id and not self.allow_group:
+            return "本插件已关闭群聊使用，请私聊使用"
+        return (
+            "本群不在插件群白名单中，请私聊使用，"
+            "或让管理员把本群号加入 enabled_groups"
+        )
 
     # ========== 号主与文件发送限额 ==========
     def _is_owner(self, event: AstrMessageEvent) -> bool:
@@ -2656,7 +2689,7 @@ class JmComicPlugin(Star):
         示例：/jmv 123456 -role -work
         """
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -2827,7 +2860,7 @@ class JmComicPlugin(Star):
         只发送章节文本，不发送封面；封面请用 /jmv <漫画id> 查看
         """
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
 
         args = event.message_str.split()
@@ -2951,14 +2984,14 @@ class JmComicPlugin(Star):
     async def jm_download(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 PDF，用法：/jm <id> [-c 章节]"""
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
         args = event.message_str.split()
 
         # 不带参数或 help，输出帮助
         if len(args) < 2 or args[1].lower() == 'help':
             help_text = (
-                "📖 漫画站插件 帮助 v0.7.7\n"
+                "📖 漫画站插件 帮助 v0.7.8\n"
                 "━━━━━━━━━━━━━━━\n"
                 "🔍 搜索：\n"
                 "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -2998,6 +3031,12 @@ class JmComicPlugin(Star):
                 "  /jmfav <文件夹id>           查看指定收藏夹\n"
                 "  /jmfav add <漫画id>         添加收藏\n"
                 "  /jmfav del <漫画id>         移除收藏\n"
+                "  /jmfav export [文件夹id]    导出收藏夹CSV（30秒内再输一次确认）\n"
+                "━━━━━━━━━━━━━━━\n"
+                "🔔 订阅：\n"
+                "  /jmsub <漫画id>             订阅漫画更新\n"
+                "  /jmsub list                 查看当前会话订阅\n"
+                "  /jmsub del <漫画id>         取消订阅\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📊 其他：\n"
                 "  /jmwhoami                   查看自己的ID（配置号主用，所有人可用）\n"
@@ -3067,7 +3106,7 @@ class JmComicPlugin(Star):
     async def jm_stop(self, event: AstrMessageEvent):
         """停止当前用户正在进行的下载"""
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
         user_id = str(event.get_sender_id())
         tasks = [
@@ -3087,6 +3126,9 @@ class JmComicPlugin(Star):
         """随机抽一个漫画，用法：/jmrand [标签名]
         不填标签就从日榜随机，填了就从指定标签里随机
         """
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         tag_name = " ".join(args[1:]) if len(args) > 1 else None
 
@@ -3161,7 +3203,7 @@ class JmComicPlugin(Star):
     async def jm_search(self, event: AstrMessageEvent):
         """全站搜索，用法：/jms <关键词> [页码] [排序]"""
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3171,6 +3213,12 @@ class JmComicPlugin(Star):
                 "  /jms <关键词> 2\n"
                 "  /jms <关键词> mv   (mv=最多浏览, tf=最多收藏)"
             )
+            return
+
+        # 纯数字搜索可选直接按车号看详情（默认关闭，避免改变普通搜索语义）
+        if self.numeric_search_as_album and len(args) == 2 and args[1].isdigit():
+            async for result in self.jm_view(event):
+                yield result
             return
 
         try:
@@ -3189,6 +3237,9 @@ class JmComicPlugin(Star):
     @filter.command("jma")
     async def jm_search_author(self, event: AstrMessageEvent):
         """按作者搜索，用法：/jma <作者名> [页码] [排序]"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jma <作者名>")
@@ -3210,6 +3261,9 @@ class JmComicPlugin(Star):
     @filter.command("jmt")
     async def jm_search_tag(self, event: AstrMessageEvent):
         """按标签搜索，用法：/jmt <标签名> [页码] [排序]"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jmt <标签名>")
@@ -3231,6 +3285,9 @@ class JmComicPlugin(Star):
     @filter.command("jmr")
     async def jm_search_actor(self, event: AstrMessageEvent):
         """按角色/演员搜索，用法：/jmr <角色名> [页码] [排序]"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jmr <角色名>")
@@ -3252,6 +3309,9 @@ class JmComicPlugin(Star):
     @filter.command("jmw")
     async def jm_search_work(self, event: AstrMessageEvent):
         """按原作搜索，用法：/jmw <原作名> [页码] [排序]"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jmw <原作名>")
@@ -3274,7 +3334,7 @@ class JmComicPlugin(Star):
     async def jm_download_zip(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 ZIP，用法：/jmzip <id> [-c 章节]"""
         if not self._check_permission(event):
-            yield self._plain(event, "本插件已关闭群聊使用，请私聊使用")
+            yield self._plain(event, self._permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3457,6 +3517,9 @@ class JmComicPlugin(Star):
     @filter.command("jmcheckin")
     async def jm_checkin(self, event: AstrMessageEvent):
         """每日签到领金币经验，用法：/jmcheckin"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         if not self._is_owner(event):
             yield self._plain(event, self._owner_required_text())
             return
@@ -3540,6 +3603,9 @@ class JmComicPlugin(Star):
     @filter.command("jmme")
     async def jm_user_info(self, event: AstrMessageEvent):
         """查看用户信息面板，用法：/jmme"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         if not self._is_owner(event):
             yield self._plain(event, self._owner_required_text())
             return
@@ -3613,6 +3679,9 @@ class JmComicPlugin(Star):
     @filter.command("jmrank")
     async def jm_ranking(self, event: AstrMessageEvent):
         """排行榜，用法：/jmrank day|week|month [页码]"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event,
@@ -3688,6 +3757,9 @@ class JmComicPlugin(Star):
     @filter.command("jmhis")
     async def jm_history(self, event: AstrMessageEvent):
         """查看下载历史，用法：/jmhis 或 /jmhis clear 清空历史"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         user_id = event.get_sender_id()
 
@@ -3784,6 +3856,9 @@ class JmComicPlugin(Star):
         """查看评论，用法：/jmc <id> [页码]
         支持翻页，展示回复楼、剧透标记、点赞数
         """
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
@@ -3947,6 +4022,9 @@ class JmComicPlugin(Star):
     @filter.command("jmwhoami")
     async def jm_whoami(self, event: AstrMessageEvent):
         """查看自己的发送者ID，用于配置 owner_ids"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         sender_id = str(event.get_sender_id())
         is_admin = event.is_admin() if hasattr(event, 'is_admin') else getattr(event, 'role', '') == 'admin'
         is_owner = self._is_owner(event)
@@ -3964,6 +4042,9 @@ class JmComicPlugin(Star):
     @filter.command("jmdomain")
     async def jm_domain(self, event: AstrMessageEvent):
         """查看 API 与 HTML 两套可用域名"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         yield self._plain(event, "🌐 正在获取可用域名...")
         try:
             client = self._new_logged_client()
@@ -4036,6 +4117,9 @@ class JmComicPlugin(Star):
     @filter.command("jmupdate")
     async def jm_changelog(self, event: AstrMessageEvent):
         """查看插件更新日志"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         changelog_path = Path(__file__).parent / "CHANGELOG.md"
         if not changelog_path.exists():
             yield self._plain(event, "❌ 更新日志文件不存在")
@@ -4086,6 +4170,337 @@ class JmComicPlugin(Star):
         reply += "\n\n/jmv <id> 查详情，/jm <id> 下载"
         return reply
 
+    def _configured_username(self):
+        try:
+            for plugin in self.option.plugins.after_init:
+                if plugin.get('plugin') == 'login':
+                    return plugin.get('kwargs', {}).get('username', '') or ''
+        except Exception:
+            pass
+        return ''
+
+    @staticmethod
+    def _collect_favorite_rows(client, folder_id):
+        """同步收集收藏夹全部条目，供 asyncio.to_thread 调用。"""
+        rows = []
+        seen = set()
+        for page in client.favorite_folder_gen(folder_id=folder_id):
+            for aid, extra in page.content:
+                aid = str(aid)
+                if aid in seen:
+                    continue
+                seen.add(aid)
+                rows.append((
+                    aid,
+                    str(extra.get('author', '') or ''),
+                    str(extra.get('name', '') or ''),
+                ))
+        return rows
+
+    @staticmethod
+    def _write_favorites_csv(path, rows):
+        """写 CSV；utf-8-sig 方便 Windows Excel 直接打开。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open('w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['id', 'author', 'name'])
+            writer.writerows(rows)
+
+    async def _export_favorites(self, event: AstrMessageEvent, folder_id: str):
+        """导出收藏夹为 CSV 文件（仅号主，无加密）。"""
+        try:
+            client = self._new_logged_client()
+            if not self._configured_username():
+                yield self._plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
+                return
+
+            folder_name = "全部"
+            if folder_id != "0":
+                folder_name = f"收藏夹{folder_id}"
+                try:
+                    page = await asyncio.to_thread(client.favorite_folder, 1)
+                    for fid, fname in page.iter_folder_id_name():
+                        if str(fid) == str(folder_id):
+                            folder_name = fname or folder_name
+                            break
+                except Exception as e:
+                    logger.warning(f"读取收藏夹名称失败: {e}")
+
+            yield self._plain(event, f"📤 正在读取收藏夹「{folder_name}」...")
+            rows = await asyncio.to_thread(
+                self._collect_favorite_rows, client, folder_id
+            )
+            if not rows:
+                yield self._plain(event, f"ℹ️ 收藏夹「{folder_name}」为空，没有可导出的内容")
+                return
+
+            export_dir = self.data_dir / "exports"
+            safe_name = self._safe_filename(folder_name or f"收藏夹{folder_id}")
+            output_path = export_dir / f"JM收藏夹_{folder_id}_{safe_name}.csv"
+            await asyncio.to_thread(self._write_favorites_csv, output_path, rows)
+
+            size_kb = max(1, math.ceil(output_path.stat().st_size / 1024))
+            self._record_file_send()
+            yield self._chain(event, [
+                Comp.Plain(f"📎 {output_path.name} ({size_kb}KB，共{len(rows)}本)\n"),
+                Comp.File(file=str(output_path), name=output_path.name),
+            ])
+            output_path.unlink(missing_ok=True)
+            await asyncio.sleep(self.send_interval)
+            yield self._plain(event, f"✅ 已导出收藏夹「{folder_name}」，共 {len(rows)} 本")
+        except Exception as e:
+            yield self._plain(event, self._handle_jm_exception(e, "导出收藏夹"))
+
+    # ========== /jmsub 订阅更新 ==========
+    def _load_subscriptions(self):
+        try:
+            data = json.loads(self.subscription_file.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning(f"读取订阅文件失败: {e}")
+            return {}
+
+    def _save_subscriptions(self, data):
+        try:
+            tmp = self.subscription_file.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, self.subscription_file)
+        except Exception as e:
+            logger.warning(f"保存订阅文件失败: {e}")
+
+    @staticmethod
+    def _album_photo_ids(album):
+        result = []
+        try:
+            for photo in album:
+                photo_id = str(getattr(photo, "photo_id", "") or "")
+                if photo_id:
+                    result.append(photo_id)
+        except Exception:
+            pass
+        return result
+
+    def _subscription_snapshot(self, album):
+        try:
+            title = str(getattr(album, "name", "") or "")
+        except Exception:
+            title = ""
+        return {
+            "title": title,
+            "photo_ids": self._album_photo_ids(album),
+            "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    async def _check_subscriptions_once(self):
+        """检查所有会话的订阅，有新增章节时推送到对应会话。"""
+        data = self._load_subscriptions()
+        if not data:
+            return
+        if self._subscription_lock is None:
+            self._subscription_lock = asyncio.Lock()
+        async with self._subscription_lock:
+            client = await asyncio.to_thread(self._new_logged_client)
+            changed = False
+            for umo, subs in list(data.items()):
+                if not isinstance(subs, dict):
+                    continue
+                for album_id, info in list(subs.items()):
+                    if not isinstance(info, dict):
+                        continue
+                    try:
+                        album = await asyncio.to_thread(
+                            client.get_album_detail, album_id
+                        )
+                        old_ids = {str(x) for x in (info.get("photo_ids") or [])}
+                        photos = list(album)
+                        new_photos = [
+                            p for p in photos
+                            if str(getattr(p, "photo_id", "")) not in old_ids
+                        ]
+                        if not new_photos:
+                            continue
+
+                        title = self._safe_text(
+                            getattr(album, "name", "") or info.get("title", ""),
+                            self.convert_title,
+                        ) or f"JM{album_id}"
+                        lines = [
+                            f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 章"
+                        ]
+                        for i, photo in enumerate(new_photos[:10], 1):
+                            chapter_name = self._safe_text(
+                                getattr(photo, "name", "") or "",
+                                self.convert_title,
+                            )
+                            index = getattr(photo, "index", None) or i
+                            lines.append(f"  第{index}章 {chapter_name}".rstrip())
+                        if len(new_photos) > 10:
+                            lines.append(f"  ... 共 {len(new_photos)} 章")
+                        lines.append("")
+                        lines.append(f"/jmv {album_id} 查看详情")
+                        text = self._safe_text("\n".join(lines))
+
+                        sent = await self.context.send_message(
+                            umo, MessageChain(chain=[Comp.Plain(text)])
+                        )
+                        if sent is False:
+                            logger.warning(f"订阅推送未找到可用平台: {umo}")
+                            continue
+
+                        info["photo_ids"] = self._album_photo_ids(album)
+                        info["title"] = str(getattr(album, "name", "") or "")
+                        info["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                        changed = True
+                    except Exception as e:
+                        logger.warning(f"检查订阅 JM{album_id} 失败: {e}")
+                    # 每本之间稍作间隔，避免集中请求触发限流
+                    await asyncio.sleep(2)
+            if changed:
+                self._save_subscriptions(data)
+
+    async def _subscription_loop(self):
+        while True:
+            interval = max(0, int(self.subscribe_interval or 0))
+            if interval <= 0:
+                return
+            try:
+                await asyncio.sleep(interval)
+                await self._check_subscriptions_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"订阅检查失败: {e}")
+                await asyncio.sleep(60)
+
+    @filter.command("jmsub")
+    async def jm_subscribe(self, event: AstrMessageEvent):
+        """订阅漫画更新，用法：
+        /jmsub <漫画id> → 订阅/更新基线
+        /jmsub list → 查看当前会话订阅
+        /jmsub del <漫画id> → 取消订阅
+        """
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
+        args = event.message_str.split()
+        umo = event.unified_msg_origin
+        data = self._load_subscriptions()
+        subs = data.get(umo)
+        if not isinstance(subs, dict):
+            subs = {}
+
+        action = args[1].lower() if len(args) >= 2 else "list"
+        if action in ("list", "ls"):
+            if not subs:
+                yield self._plain(event,
+                    "当前会话还没有订阅。\n"
+                    "用法：/jmsub <漫画id> 订阅更新"
+                )
+                return
+            lines = [f"🔔 当前会话订阅（{len(subs)}）："]
+            for album_id, info in subs.items():
+                title = self._safe_text(
+                    (info or {}).get("title", "") or "未知", self.convert_title
+                )
+                count = len((info or {}).get("photo_ids") or [])
+                lines.append(f"  JM{album_id} {title}（{count}章）")
+            lines.append("")
+            lines.append("💡 /jmsub <漫画id> 更新基线，/jmsub del <漫画id> 取消")
+            yield self._plain(event, "\n".join(lines))
+            return
+
+        if action in ("del", "remove", "unsub"):
+            if len(args) != 3:
+                yield self._plain(event, "用法：/jmsub del <漫画id>")
+                return
+            _, album_id = self._normalize_target(args[2])
+            if not album_id.isdigit() or int(album_id) <= 0:
+                yield self._plain(event, f"❌ 漫画ID必须是大于 0 的数字：{args[2]}")
+                return
+            if album_id not in subs:
+                yield self._plain(event, f"ℹ️ 当前会话没有订阅 JM{album_id}")
+                return
+            subs.pop(album_id, None)
+            if subs:
+                data[umo] = subs
+            else:
+                data.pop(umo, None)
+            self._save_subscriptions(data)
+            yield self._plain(event, f"✅ 已取消订阅 JM{album_id}")
+            return
+
+        if len(args) != 2:
+            yield self._plain(event,
+                "用法：\n"
+                "  /jmsub <漫画id>        订阅更新\n"
+                "  /jmsub list            查看当前会话订阅\n"
+                "  /jmsub del <漫画id>    取消订阅"
+            )
+            return
+
+        prefix, album_id = self._normalize_target(args[1])
+        if prefix == "p" or not album_id.isdigit() or int(album_id) <= 0:
+            yield self._plain(event,
+                f"❌ 漫画ID必须是大于 0 的数字：{args[1]}\n"
+                "章节ID不能订阅，请填所属漫画ID"
+            )
+            return
+
+        yield self._plain(event, f"🔔 正在读取 JM{album_id} 的章节信息...")
+        try:
+            client = await asyncio.to_thread(self._new_logged_client)
+            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            if self._looks_like_chapter_album(album):
+                parent_id = await self._resolve_chapter_album_parent(
+                    client, album, album_id
+                )
+                if parent_id:
+                    yield self._plain(event,
+                        f"❌ JM{album_id} 是章节ID，不能订阅。\n"
+                        f"所属漫画：JM{parent_id}\n"
+                        f"请用 /jmsub {parent_id} 订阅整本更新。"
+                    )
+                else:
+                    yield self._plain(event,
+                        f"❌ JM{album_id} 是章节ID，不能订阅。请改用所属漫画ID。"
+                    )
+                return
+
+            snapshot = self._subscription_snapshot(album)
+            if not snapshot["photo_ids"]:
+                yield self._plain(event,
+                    f"⚠️ JM{album_id} 没有章节列表，暂时无法订阅"
+                )
+                return
+
+            existed = album_id in subs
+            subs[album_id] = snapshot
+            data[umo] = subs
+            self._save_subscriptions(data)
+
+            title = self._safe_text(
+                snapshot["title"] or f"JM{album_id}", self.convert_title
+            )
+            if self.subscribe_interval > 0:
+                interval_text = (
+                    f"每 {self.subscribe_interval} 秒检查一次"
+                    if self.subscribe_interval < 3600
+                    else f"每 {self.subscribe_interval // 3600} 小时检查一次"
+                )
+                hint = f"后台会{interval_text}，发现新章节后推送到当前会话。"
+            else:
+                hint = "后台自动检查已关闭（subscribe_interval=0），当前只保存订阅，不会推送。"
+            yield self._plain(event,
+                f"{'🔄 已更新订阅基线' if existed else '✅ 已订阅'}："
+                f"《{title}》JM{album_id}\n"
+                f"当前 {len(snapshot['photo_ids'])} 章。{hint}"
+            )
+        except Exception as e:
+            yield self._plain(event, self._handle_jm_exception(e, "订阅"))
+
     @filter.command("jmfav")
     async def jm_favorite(self, event: AstrMessageEvent):
         """收藏夹功能：
@@ -4093,7 +4508,11 @@ class JmComicPlugin(Star):
         /jmfav <文件夹id> → 查看文件夹里的内容
         /jmfav add <漫画id> → 把漫画加入收藏夹
         /jmfav del <漫画id> → 从收藏夹移除
+        /jmfav export [文件夹id] → 导出收藏夹 CSV（30 秒内二次确认）
         """
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
         if not self._is_owner(event):
             yield self._plain(event, self._owner_required_text())
             return
@@ -4111,6 +4530,50 @@ class JmComicPlugin(Star):
             if not album_id.isdigit() or int(album_id) <= 0:
                 yield self._plain(event, f"❌ 漫画ID必须是大于 0 的数字：{args[2]}")
                 return
+        elif operation == "export":
+            if len(args) > 3:
+                yield self._plain(event,
+                    "用法：/jmfav export [文件夹id]\n"
+                    "不带文件夹id时导出“全部”收藏"
+                )
+                return
+            folder_id = "0"
+            if len(args) == 3:
+                token = args[2]
+                if not re.fullmatch(r"\d+", token):
+                    yield self._plain(event, f"❌ 文件夹ID必须是数字：{token}")
+                    return
+                folder_id = str(int(token))
+
+            # 二次确认：首次输入只提示，30 秒内再次输入相同命令才真正导出
+            user_key = (str(event.get_sender_id()), event.unified_msg_origin)
+            action_key = f"export:{folder_id}"
+            key = (*user_key, action_key)
+            now = time.monotonic()
+            self._pending_exports = {
+                k: v for k, v in self._pending_exports.items()
+                if now - v <= 30
+                and not (
+                    k[0] == user_key[0]
+                    and k[1] == user_key[1]
+                    and k[2] != action_key
+                )
+            }
+            command_text = "/jmfav export"
+            if len(args) == 3:
+                command_text += f" {args[2]}"
+            if key not in self._pending_exports:
+                self._pending_exports[key] = now
+                yield self._plain(event,
+                    f"⚠️ 即将导出收藏夹 [ID:{folder_id}] 为 CSV 文件。\n"
+                    "导出会把账号收藏数据写入文件并发送到当前会话，请确认不是误触。\n"
+                    f"请在 30 秒内再次输入完全相同的命令确认：\n{command_text}"
+                )
+                return
+            self._pending_exports.pop(key, None)
+            async for item in self._export_favorites(event, folder_id):
+                yield item
+            return
         elif len(args) >= 2:
             if len(args) > 2:
                 yield self._plain(event, "用法：/jmfav [文件夹id]\n文件夹ID只能填一个")
@@ -4119,7 +4582,8 @@ class JmComicPlugin(Star):
             if not re.fullmatch(r"\d+", folder_token):
                 yield self._plain(event,
                     f"❌ 无法识别的收藏夹参数：{folder_token}\n"
-                    "用法：/jmfav | /jmfav <文件夹id> | /jmfav add <漫画id> | /jmfav del <漫画id>"
+                    "用法：/jmfav | /jmfav <文件夹id> | /jmfav add <漫画id> | "
+                    "/jmfav del <漫画id> | /jmfav export [文件夹id]"
                 )
                 return
             if int(folder_token) < 0:
@@ -4223,5 +4687,22 @@ class JmComicPlugin(Star):
         except Exception as e:
             yield self._plain(event, self._handle_jm_exception(e, "收藏夹操作"))
 
+    async def initialize(self):
+        """插件激活时启动订阅更新检查。"""
+        if self.subscribe_interval > 0 and self._subscribe_task is None:
+            if self._subscription_lock is None:
+                self._subscription_lock = asyncio.Lock()
+            self._subscribe_task = asyncio.create_task(self._subscription_loop())
+            logger.info(f"订阅更新检查已启动，间隔 {self.subscribe_interval} 秒")
+
     async def terminate(self):
-        pass
+        task = self._subscribe_task
+        self._subscribe_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.debug(f"停止订阅检查任务时出错: {e}")

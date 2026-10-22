@@ -33,6 +33,12 @@
     "description": "允许群聊使用",
     "hint": "关闭后只允许私聊使用。群聊消息更容易触发平台审核，建议只对信任的群开启。"
   },
+  "enabled_groups": {
+    "type": "string",
+    "default": "",
+    "description": "群聊白名单",
+    "hint": "只允许这些群号使用插件，英文逗号分隔，例如 123456,789012；留空表示不限制（仍受 allow_group 控制）。私聊不受影响。"
+  },
   "owner_ids": {
     "type": "string",
     "default": "",
@@ -115,6 +121,17 @@
       "step": 5
     },
     "hint": "整本下载每完成约 N% 推送一次进度，默认 10；0 表示关闭进度推送。慢速下载时每 60 秒会额外补发一次心跳，避免长时间没有消息。"
+  },
+  "subscribe_interval": {
+    "type": "int",
+    "default": 3600,
+    "description": "订阅检查间隔（秒）",
+    "slider": {
+      "min": 0,
+      "max": 86400,
+      "step": 300
+    },
+    "hint": "后台每隔多少秒检查一次订阅漫画的新章节并推送，默认 3600（1 小时）；0 表示关闭后台检查，只保留 /jmsub 的订阅增删。"
   },
   "use_proxy": {
     "type": "bool",
@@ -215,6 +232,12 @@
     "default": true,
     "description": "简繁双搜索",
     "hint": "搜索时同时使用简体和繁体关键词，减少漏结果；会稍微增加请求量。"
+  },
+  "numeric_search_as_album": {
+    "type": "bool",
+    "default": false,
+    "description": "jms 纯数字按车号查详情",
+    "hint": "开启后 /jms 123456 会直接显示漫画详情（等同 /jmv 123456），不再当作搜索词；默认关闭，避免影响纯数字搜索。"
   },
   "daily_file_limit": {
     "type": "int",
