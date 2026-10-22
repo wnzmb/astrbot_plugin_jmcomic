@@ -2923,22 +2923,32 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
             # 下载封面并发送；-pic 不发送封面
-            # 封面走文件通道，避免 QQ 官方对图片组件做图像审核导致 40034006
+            # 封面转成 PDF 后走文件通道，避免 QQ 官方对图片/JPEG 做图像审核
             if '-pic' not in options:
                 cover_path = self.data_dir / f"cover_{album_id}.jpg"
+                cover_pdf = self.data_dir / f"cover_{album_id}.pdf"
                 try:
                     await asyncio.to_thread(client.download_album_cover, album_id, str(cover_path))
                     if cover_path.exists():
+                        def image_to_pdf():
+                            from PIL import Image
+                            with Image.open(cover_path) as img:
+                                img.convert("RGB").save(cover_pdf, "PDF", resolution=150.0)
+
+                        await asyncio.to_thread(image_to_pdf)
+                        cover_path.unlink(missing_ok=True)
                         yield self._chain(event, [
                             Comp.File(
-                                file=str(cover_path),
-                                name=f"JM{album_id}_封面.jpg",
+                                file=str(cover_pdf),
+                                name=f"JM{album_id}_封面.pdf",
                             )
                         ])
                         # 发完就删，不存着
-                        cover_path.unlink(missing_ok=True)
+                        cover_pdf.unlink(missing_ok=True)
                 except Exception as e:
-                    logger.warning(f"封面下载失败: {e}")
+                    logger.warning(f"封面下载/转换失败: {e}")
+                    cover_path.unlink(missing_ok=True)
+                    cover_pdf.unlink(missing_ok=True)
 
         except Exception as e:
             yield self._plain(event, self._handle_jm_exception(e, "查询"))
