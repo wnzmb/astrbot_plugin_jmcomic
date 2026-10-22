@@ -2527,33 +2527,48 @@ class JmComicPlugin(Star):
 
     def _parse_search_args(self, args):
         """
-        解析搜索参数：关键词 + 可选页码 + 可选排序
+        解析搜索参数：关键词 + 可选页码 + 可选排序。
+        关键词允许包含空格：只把末尾的页码/排序当作参数，其余片段合并为关键词，
+        避免 `jms 纯  爱` 被拆成关键词“纯” + 非法参数“爱”。
         支持格式：
           /jms 关键词
+          /jms 多词 关键词
           /jms 关键词 2
           /jms 关键词 mv
           /jms 关键词 2 mv
         返回：(keyword, qq_page, order_by)
         """
-        keyword = args[1]
+        tokens = [str(x) for x in args[1:] if str(x).strip()]
+        if not tokens:
+            raise ValueError("关键词不能为空")
+
         qq_page = 1
         order_by = JmMagicConstants.ORDER_BY_LATEST  # 默认最新
+        page_set = False
+        sort_set = False
 
-        # 解析后面的参数（页码/排序）。非法页码不再静默回退到第1页。
-        extra = args[2:]
-        for arg in extra:
-            if re.fullmatch(r"\d+", arg):
-                qq_page = int(arg)
-                if qq_page < 1:
+        # 从末尾消费页码/排序；至少保留一个片段作为关键词，
+        # 这样 `/jms 2` 仍会被当作关键词“2”，而不是页码。
+        while len(tokens) > 1:
+            last = tokens[-1]
+            if not sort_set and last in self.order_map:
+                order_by = last
+                sort_set = True
+                tokens.pop()
+                continue
+            if not page_set and re.fullmatch(r"[+-]?\d+", last):
+                value = int(last)
+                if value < 1:
                     raise ValueError("页码必须是大于 0 的整数")
-            elif arg in self.order_map:
-                order_by = arg
-            else:
-                raise ValueError(
-                    f"无法识别的参数「{arg}」；页码需为正整数，"
-                    "排序可选 mr/mv/mp/tf/tr/md"
-                )
+                qq_page = value
+                page_set = True
+                tokens.pop()
+                continue
+            break
 
+        keyword = re.sub(r"\s+", " ", " ".join(tokens)).strip()
+        if not keyword:
+            raise ValueError("关键词不能为空")
         return keyword, qq_page, order_by
 
     @staticmethod
