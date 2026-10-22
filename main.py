@@ -300,9 +300,9 @@ class JmComicPlugin(Star):
                 }
             },
             "dir_rule": {
-                # 缓存目录只保留 ID，标题写入 metadata.json，避免长标题触发
-                # Windows MAX_PATH；目录结构：JM{漫画id}/P{章节id}/图片
-                "rule": "Bd/JM{Aid}/P{Pid}",
+                # 目录保留 ID + 网站话数，标题写入 metadata.json，避免长标题
+                # 触发 Windows MAX_PATH；结构：JM{漫画id}/P{章节id}_第N话/图片
+                "rule": "Bd/JM{Aid}/P{Pid}_第{Palbum_index}话",
                 "normalize_zh": "zh-cn"
             },
             "plugins": {
@@ -505,7 +505,7 @@ class JmComicPlugin(Star):
     def _handle_jm_exception(self, e: Exception, action: str = "操作") -> str:
         """把 jmcomic 异常转换为用户友好的提示"""
         if isinstance(e, MissingAlbumPhotoException):
-            return f"❌ 查无此本/章节，请检查 ID 是否正确"
+            return f"❌ 查无此本/话，请检查 ID 是否正确"
         elif isinstance(e, RequestRetryAllFailException):
             return (
                 "❌ 网络请求全部失败，可尝试在插件配置中更换域名；"
@@ -677,8 +677,15 @@ class JmComicPlugin(Star):
         album_metadata = self._read_metadata(album_dir)
         for item in album_metadata.get("chapters", []) or []:
             if photo_id and str(item.get("photo_id", "")) == photo_id:
-                return item.get("title_display") or item.get("title") or f"第{index}章"
-        return f"第{index}章"
+                return item.get("title_display") or item.get("title") or f"第{index}话"
+        return f"第{index}话"
+
+    def _format_chapter_line(self, photo, index, limit=50):
+        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题。"""
+        position = self._photo_position(photo, index)
+        title = self._safe_text(getattr(photo, "name", ""), self.convert_title)
+        title = title[:limit] if title else "（无标题）"
+        return f"第{position}话 [JM{getattr(photo, 'photo_id', '')}] {title}"
 
     def _save_target_metadata(self, album, album_id, chapters, album_dir,
                               selected_photos=None):
@@ -810,6 +817,37 @@ class JmComicPlugin(Star):
             album_data["updated_at"] = datetime.now().isoformat(timespec="seconds")
             self._write_metadata(album_dir, album_data)
 
+    def _known_photo_position(self, photo, folder=None, album_dir=None):
+        """只返回可确认的网站话序号；取不到时返回 None。"""
+        candidates = []
+        try:
+            candidates.append(getattr(photo, "album_index", None))
+        except Exception:
+            pass
+        photo_id = str(getattr(photo, "photo_id", "") or "")
+        if album_dir is not None and photo_id:
+            for item in self._read_metadata(album_dir).get("chapters", []) or []:
+                if str(item.get("photo_id", "")) == photo_id:
+                    candidates.append(item.get("index"))
+                    break
+        if folder is not None:
+            candidates.append(self._read_metadata(folder).get("index"))
+        for value in candidates:
+            try:
+                value = int(value)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _photo_position(self, photo, fallback=1, folder=None, album_dir=None):
+        """取章节在漫画中的网站话序号（1 起），失败时回退到调用方序号。"""
+        position = self._known_photo_position(photo, folder, album_dir)
+        if position is not None:
+            return position
+        return max(1, int(fallback or 1))
+
     def _unit_metadata_index(self, unit, folder):
         try:
             index = int(self._read_metadata(folder).get("index") or unit.index)
@@ -845,7 +883,7 @@ class JmComicPlugin(Star):
         lines.append("")
         lines.append("本次包含：")
         if not chapter_entries:
-            lines.append("- 无可用章节")
+            lines.append("- 无可用话")
         for unit, folder, _images in chapter_entries:
             chapter_index = self._unit_metadata_index(unit, folder)
             chapter_title = self._chapter_display_title(
@@ -856,7 +894,7 @@ class JmComicPlugin(Star):
             )
             photo_id = getattr(unit.photo, "photo_id", chapter_index)
             lines.append(
-                f"- 第{chapter_index:03d}章 {chapter_title}{page_suffix}  [JM{photo_id}]"
+                f"- 第{chapter_index}话 {chapter_title}{page_suffix}  [JM{photo_id}]"
             )
         return "\n".join(lines).rstrip() + "\n"
 
@@ -887,13 +925,13 @@ class JmComicPlugin(Star):
             ))
         if indexes:
             index_text = self._format_index_token(indexes)
-            lines.append(f"本次包含：第{index_text}章（共{len(set(indexes))}章）")
+            lines.append(f"本次包含：第{index_text}话（共{len(set(indexes))}话）")
             partial_entries = [
                 entry for entry in chapter_entries if entry[0].partial
             ]
             if partial_entries:
                 lines.append("含页段：" + "、".join(
-                    f"第{self._unit_metadata_index(unit, folder):03d}章 "
+                    f"第{self._unit_metadata_index(unit, folder)}话 "
                     f"{unit.start}-{unit.end}页"
                     for unit, folder, _images in partial_entries[:6]
                 ))
@@ -917,7 +955,7 @@ class JmComicPlugin(Star):
         result = {
             "title": title,
             "subject": f"JM{album_id}"
-            + (f" 第{self._format_index_token(indexes)}章" if indexes else ""),
+            + (f" 第{self._format_index_token(indexes)}话" if indexes else ""),
         }
         if authors:
             result["author"] = "、".join(
@@ -1206,7 +1244,7 @@ class JmComicPlugin(Star):
 
     # ========== 下载核心：ID识别 / 章节选择 / PDF-ZIP / 限额 ==========
     def _parse_download_args(self, args):
-        """解析 /jm <目标> [-c 章节]；PDF/ZIP 合并参数由后台配置决定"""
+        """解析 /jm <目标> [-c 话]；PDF/ZIP 合并参数由后台配置决定"""
         target = args[1] if len(args) > 1 else ""
         chapter_expr = None
         index = 2
@@ -1214,7 +1252,7 @@ class JmComicPlugin(Star):
             token = args[index]
             if token in ("-c", "--chapters"):
                 if index + 1 >= len(args):
-                    raise ValueError("-c 后面需要填写章节或页段，例如 -c 31-40 或 -c 5:201-400")
+                    raise ValueError("-c 后面需要填写话或页段，例如 -c 31-40 或 -c 5:201-400")
                 chapter_expr = args[index + 1]
                 index += 2
             elif token.startswith("-"):
@@ -1390,7 +1428,7 @@ class JmComicPlugin(Star):
                 chapter_part = chapter_part.strip()
                 if not chapter_part.isdigit():
                     invalid.append(part)
-                    notes.append(f"{part} 页码范围只能用于单个章节，例如 5:201-400")
+                    notes.append(f"{part} 页码范围只能用于单个话，例如 5:201-400")
                     continue
                 value = int(chapter_part)
                 if value <= 0:
@@ -1401,7 +1439,7 @@ class JmComicPlugin(Star):
                     invalid.append(part)
                     continue
                 if value in whole_indexes:
-                    notes.append(f"第{value}章已选择整章，忽略其页段 {part}")
+                    notes.append(f"第{value}话已选择整话，忽略其页段 {part}")
                     continue
                 page_ranges.setdefault(value, []).append(page_range)
                 indexes.add(value)
@@ -1426,7 +1464,7 @@ class JmComicPlugin(Star):
                         page_ranges.pop(value, None)
                 else:
                     invalid.append(part)
-                    notes.append(f"{part} 不是有效章节格式，已忽略")
+                    notes.append(f"{part} 不是有效话格式，已忽略")
             elif part.isdigit():
                 value = int(part)
                 if value <= 0:
@@ -1522,10 +1560,10 @@ class JmComicPlugin(Star):
                 result.append((index, photo, page_range))
                 continue
             if start > total:
-                notes.append(f"第{index}章只有{total}页，页码 {start} 超出范围，已忽略该章")
+                notes.append(f"第{index}话只有{total}页，页码 {start} 超出范围，已忽略该话")
                 continue
             if end is not None and end > total:
-                notes.append(f"第{index}章只有{total}页，结束页已调整为{total}")
+                notes.append(f"第{index}话只有{total}页，结束页已调整为{total}")
                 end = total
             if end is not None and end < start:
                 start, end = end, start
@@ -1600,6 +1638,29 @@ class JmComicPlugin(Star):
         parts.append(str(start) if start == previous else f"{start}-{previous}")
         return ",".join(parts)
 
+    def _migrate_legacy_chapter_dir(self, folder, photo, album_dir=None):
+        """把旧版 P{id} 目录原地改名为 P{id}_第N话，避免升级后重复下载。"""
+        if folder is None:
+            return None
+        try:
+            folder = Path(folder)
+            photo_id = str(getattr(photo, "photo_id", "") or "")
+            if not photo_id or folder.name != f"P{photo_id}":
+                return folder
+            position = self._known_photo_position(photo, folder, album_dir)
+            if position is None:
+                return folder
+            target = folder.with_name(f"P{photo_id}_第{position}话")
+            if target.exists():
+                # 目标目录已存在时，只有确实有图片才使用，避免返回空目录。
+                return target if self._album_dir_has_images(target) else folder
+            folder.rename(target)
+            logger.info(f"缓存目录已迁移：{folder.name} -> {target.name}")
+            return target
+        except Exception as e:
+            logger.warning(f"缓存目录迁移失败（继续使用旧目录）: {e}")
+            return folder
+
     def _chapter_dir(self, photo, album_dir=None):
         """定位章节图片目录"""
         candidates = []
@@ -1614,7 +1675,7 @@ class JmComicPlugin(Star):
         for folder in candidates:
             try:
                 if folder.is_dir() and self._album_dir_has_images(folder):
-                    return folder
+                    return self._migrate_legacy_chapter_dir(folder, photo, album_dir)
             except Exception:
                 continue
 
@@ -1624,11 +1685,11 @@ class JmComicPlugin(Star):
             photo_id = str(getattr(photo, "photo_id", "") or "")
             try:
                 subs = [sub for sub in album_dir.iterdir() if sub.is_dir()]
-                # 1) 新版精确 P{id}，旧版 P{id}_标题 兼容
+                # 1) 新版精确 P{id}_第N话；旧版 P{id}/P{id}_标题 兼容并迁移
                 if photo_id:
                     exact = album_dir / f"P{photo_id}"
                     if exact.is_dir() and self._album_dir_has_images(exact):
-                        return exact
+                        return self._migrate_legacy_chapter_dir(exact, photo, album_dir)
                     for sub in subs:
                         if sub.name.startswith(f"P{photo_id}_") and self._album_dir_has_images(sub):
                             return sub
@@ -1883,62 +1944,68 @@ class JmComicPlugin(Star):
         return zip_path
 
     def _zip_chapter_folder(self, photo, index, folder=None, album_dir=None):
-        """ZIP 内章节目录名：章节标题_第XXX章（章节号放在最后，便于排序）"""
-        title = self._chapter_display_title(photo, index, folder, album_dir)
-        title = self._safe_filename(title or f"第{index}章", 60)
-        return f"{title}_第{index:03d}章"
+        """ZIP 内话目录名：P{章节id}_第{网站话数}话。"""
+        photo_id = str(getattr(photo, "photo_id", index) or index)
+        position = self._photo_position(photo, index, folder, album_dir)
+        return f"P{photo_id}_第{position}话"
 
-    def _chapter_file_stem(self, photo, index, folder=None, album_title="", album_dir=None):
-        """单章文件：JM章节ID_章节标题（不再拼接漫画标题）"""
-        title = self._chapter_display_title(photo, index, folder, album_dir)
-        title = self._safe_filename(title or f"第{index}章", 40)
-        return f"JM{getattr(photo, 'photo_id', index)}_{title}"
+    def _chapter_file_stem(self, photo, index, folder=None, album_id="", album_dir=None):
+        """单话文件：JM{漫画id}_P{网站话数:03d}。"""
+        album_id = str(
+            album_id
+            or getattr(photo, "album_id", "")
+            or "unknown"
+        )
+        position = self._photo_position(photo, index, folder, album_dir)
+        return f"JM{album_id}_P{position:03d}"
 
     def _group_file_stem(self, album_id, album_title, indexes):
-        """多章合并文件：JM漫画ID_章节号列表（不再拼接漫画标题）。
+        """多话合并文件：JM漫画id_P起始-P结束 / P起始,P下一话。
 
-        连续章节用 031-035；非连续章节用 031,035,040，避免把实际
-        只含三章的文件标成 031-040。
+        连续话用 P031-P035；非连续话用 P031,P035,P040，避免把实际
+        只含三话的文件标成 P031-P040。
         """
         values = sorted({int(x) for x in indexes})
-        index_text = self._format_index_token(values)
-        return f"JM{album_id}_{index_text}"
+        return f"JM{album_id}_{self._format_position_token(values)}"
 
     def _format_index_token(self, indexes):
-        """把章节号格式化为 031-035 / 031,035,040"""
+        """把话序号格式化为展示用 31-35 / 31,35,40（不补零）。"""
+        return self._format_index_ranges(indexes) or "0"
+
+    def _format_position_token(self, indexes):
+        """把话序号格式化为文件名用 P031-P035 / P031,P035,P040。"""
         parts = []
         for token in self._format_index_ranges(indexes).split(","):
             if not token:
                 continue
             if "-" in token:
                 start, end = token.split("-", 1)
-                parts.append(f"{int(start):03d}-{int(end):03d}")
+                parts.append(f"P{int(start):03d}-P{int(end):03d}")
             else:
-                parts.append(f"{int(token):03d}")
-        return ",".join(parts) or "000"
+                parts.append(f"P{int(token):03d}")
+        return ",".join(parts) or "P000"
 
     def _file_stem_for_entries(self, entries, album_id, album_title, album_dir=None):
-        """按页段生成文件名；页段带 _P起始-结束，多个页段分别标注章节号"""
+        """按页段生成文件名；页段后缀用 _p起始-结束，话序号用 P。"""
         if len(entries) == 1:
             unit, folder, _ = entries[0]
             stem = self._chapter_file_stem(
-                unit.photo, unit.index, folder, album_title, album_dir
+                unit.photo, unit.index, folder, album_id, album_dir
             )
             if unit.partial:
-                stem += f"_P{unit.start:03d}-{unit.end:03d}"
+                stem += f"_p{unit.start:03d}-{unit.end:03d}"
             return stem
 
         indexes = {unit.index for unit, _folder, _images in entries}
         if len(indexes) == 1:
-            # 同一章节的多个不连续页段仍属于单章，继续使用章节ID+标题，
-            # 每个页段单独追加 _P起始-结束，避免退化成漫画ID文件名。
+            # 同一话的多个不连续页段仍属于单话，每个页段单独追加 _p起始-结束。
             unit, folder, _ = entries[0]
             stem = self._chapter_file_stem(
-                unit.photo, unit.index, folder, album_title, album_dir
+                unit.photo, unit.index, folder, album_id, album_dir
             )
             for unit, _folder, _images in entries:
                 if unit.partial:
-                    stem += f"_P{unit.start:03d}-{unit.end:03d}"
+                    stem += f"_p{unit.start:03d}-{unit.end:03d}"
             return stem
 
         stem = self._group_file_stem(
@@ -1947,20 +2014,23 @@ class JmComicPlugin(Star):
         partials = [unit for unit, _folder, _images in entries if unit.partial]
         if len(partials) == 1:
             unit = partials[0]
-            stem += f"_P{unit.start:03d}-{unit.end:03d}"
+            stem += f"_p{unit.start:03d}-{unit.end:03d}"
         else:
-            # 手动组合多个页段时逐个标注，避免不同页码组合生成同名文件
-            for unit in partials:
-                stem += f"_{unit.index:03d}P{unit.start:03d}-{unit.end:03d}"
+            # 手动组合多个页段时逐个标注话序号，避免不同页码组合生成同名文件
+            for unit, folder, _images in entries:
+                if not unit.partial:
+                    continue
+                position = self._photo_position(
+                    unit.photo, unit.index, folder, album_dir
+                )
+                stem += f"_P{position:03d}p{unit.start:03d}-{unit.end:03d}"
         return stem
 
     def _zip_arc_dir(self, unit, folder, multi, album_dir=None):
-        """ZIP 内章节目录名；单章直接放根目录"""
-        if not multi:
-            return None
+        """ZIP 内章节目录名；单话也包一层，便于和缓存目录对照。"""
         arc_dir = self._zip_chapter_folder(unit.photo, unit.index, folder, album_dir)
         if unit.partial:
-            arc_dir += f"_P{unit.start:03d}-{unit.end:03d}"
+            arc_dir += f"_p{unit.start:03d}-{unit.end:03d}"
         return arc_dir
 
     @staticmethod
@@ -1977,7 +2047,7 @@ class JmComicPlugin(Star):
         photo_no = max(0, int(prog.get("current_photo") or 0))
         if photo_total > 0 and photo_no > 0:
             photo_no = min(photo_no, photo_total)
-            chapter = f" 第{photo_no}/{photo_total}章"
+            chapter = f" 第{photo_no}/{photo_total}话"
         return (
             f"⏳ 下载进度：{pct}% "
             f"[{self._progress_bar(pct)}] ({done}/{total}张){chapter}"
@@ -1998,7 +2068,7 @@ class JmComicPlugin(Star):
             return
         if folder is not None:
             yield self._plain(event,
-                f"📦 JM{album_id} 缓存不完整，将只补下缺失章节/图片..."
+                f"📦 JM{album_id} 缓存不完整，将只补下缺失话/图片..."
             )
 
         attempts = 3
@@ -2061,7 +2131,7 @@ class JmComicPlugin(Star):
                     holder["duration"] = 0.0
                     holder["partial"] = True
                     yield self._plain(event,
-                        "⚠️ 重试后仍有图片下载失败，先发送已完成章节；"
+                        "⚠️ 重试后仍有图片下载失败，先发送已完成话；"
                         "缺失图片已保留缓存，稍后重跑命令可继续补齐。"
                     )
                     return
@@ -2075,7 +2145,7 @@ class JmComicPlugin(Star):
             elif chapters and not self._album_cache_complete(folder, chapters):
                 holder["partial"] = True
                 yield self._plain(event,
-                    "⚠️ 下载结束但仍有章节缺失，将先发送已完成章节；"
+                    "⚠️ 下载结束但仍有话缺失，将先发送已完成话；"
                     "稍后重跑命令可继续补齐。"
                 )
             return
@@ -2091,7 +2161,7 @@ class JmComicPlugin(Star):
         except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
             folder = self._chapter_dir(photo, album_dir)
             if folder is not None and self._album_dir_has_images(folder):
-                logger.warning(f"第{getattr(photo, 'photo_id', '')}章部分图片失败，先使用已下载图片: {e}")
+                logger.warning(f"第{getattr(photo, 'photo_id', '')}话部分图片失败，先使用已下载图片: {e}")
                 return folder, 0.0
             raise
         detail = getattr(result, "detail", photo)
@@ -2211,23 +2281,23 @@ class JmComicPlugin(Star):
                 album = target.get("album")
                 album_id = getattr(album, "album_id", "") if album is not None else ""
                 note = f"（所属漫画 JM{album_id}）" if album_id else ""
-                yield self._plain(event, f"ℹ️ {target_label} 是章节ID{note}，按单章处理")
+                yield self._plain(event, f"ℹ️ {target_label} 是章节ID{note}，按单话处理")
 
             chapters = target["chapters"]
             if not chapters:
                 failed.append(raw)
-                yield self._plain(event, f"⚠️ {target_label} 没有章节")
+                yield self._plain(event, f"⚠️ {target_label} 没有话")
                 continue
 
             if kind == "album" and chapter_expr:
                 selected, invalid, notes = self._select_chapters(chapters, chapter_expr)
                 if notes:
-                    yield self._plain(event, "⚠️ 章节提示：" + "；".join(notes))
+                    yield self._plain(event, "⚠️ 话提示：" + "；".join(notes))
                 if invalid:
-                    yield self._plain(event, f"⚠️ 忽略无效章节/页段序号：{', '.join(invalid)}")
+                    yield self._plain(event, f"⚠️ 忽略无效话/页段序号：{', '.join(invalid)}")
                 if not selected:
                     failed.append(raw)
-                    yield self._plain(event, f"⚠️ {target_label} 没有选中任何章节")
+                    yield self._plain(event, f"⚠️ {target_label} 没有选中任何话")
                     continue
             elif kind == "album":
                 selected = [(i + 1, ch, None) for i, ch in enumerate(chapters)]
@@ -2249,7 +2319,7 @@ class JmComicPlugin(Star):
                     if chapter_expr:
                         yield self._plain(
                             event,
-                            "ℹ️ 章节ID目标只支持页段参数（如 -c 1:201-），已忽略章节参数",
+                            "ℹ️ 章节ID目标只支持页段参数（如 -c 1:201-），已忽略话参数",
                         )
 
             album = target.get("album")
@@ -2300,18 +2370,18 @@ class JmComicPlugin(Star):
                         cached_indexes.append(original_index)
                         continue
                     yield self._plain(event,
-                        f"⬇️ {target_label} 下载第{original_index}章"
+                        f"⬇️ {target_label} 下载第{original_index}话"
                         f"（{position + 1}/{len(download_items)}）..."
                     )
                     try:
                         await self._ensure_photo_downloaded(photo, album_dir)
                     except Exception as e:
                         yield self._plain(event,
-                            f"❌ 第{original_index}章下载失败：{e}"
+                            f"❌ 第{original_index}话下载失败：{e}"
                         )
                 if cached_indexes:
                     yield self._plain(event,
-                        f"📦 {target_label} 第{self._format_index_ranges(cached_indexes)}章"
+                        f"📦 {target_label} 第{self._format_index_ranges(cached_indexes)}话"
                         "已有缓存，跳过下载"
                     )
 
@@ -2337,7 +2407,7 @@ class JmComicPlugin(Star):
             if duplicate_indexes:
                 yield self._plain(
                     event,
-                    f"ℹ️ {target_label} 第{self._format_index_ranges(duplicate_indexes)}章"
+                    f"ℹ️ {target_label} 第{self._format_index_ranges(duplicate_indexes)}话"
                     "已在本批次发送过，跳过重复文件"
                 )
             if not selected:
@@ -2345,7 +2415,7 @@ class JmComicPlugin(Star):
                     success += 1
                 else:
                     failed.append(raw)
-                    yield self._plain(event, f"⚠️ {target_label} 没有可用的章节页段")
+                    yield self._plain(event, f"⚠️ {target_label} 没有可用的话页段")
                 continue
 
             # PDF：整章优先，单章超限按页切；ZIP：章数 + 页数双上限
@@ -2357,7 +2427,6 @@ class JmComicPlugin(Star):
             target_sizes = []
             target_sent = 0
             target_failed = 0
-            pdf_cover_pending = output_format == "pdf"
             if kind == "photo":
                 target_title = self._chapter_display_title(
                     target.get("photo"), 1, None, album_dir
@@ -2389,7 +2458,7 @@ class JmComicPlugin(Star):
                         try:
                             folder, _ = await self._ensure_photo_downloaded(unit.photo, album_dir)
                         except Exception as e:
-                            logger.warning(f"第{unit.index}章补下载失败: {e}")
+                            logger.warning(f"第{unit.index}话补下载失败: {e}")
                             folder = None
                     if folder is None:
                         target_failed += 1
@@ -2409,7 +2478,7 @@ class JmComicPlugin(Star):
 
                 if not chapter_entries:
                     yield self._plain(event,
-                        f"⚠️ {target_label} 第{group[0].index}章没有图片"
+                        f"⚠️ {target_label} 第{group[0].index}话没有图片"
                     )
                     continue
 
@@ -2434,10 +2503,10 @@ class JmComicPlugin(Star):
                     pdf_metadata = self._pdf_metadata(
                         album, album_id, album_dir, chapter_entries
                     )
-                    if pdf_cover_pending:
-                        cover_text = self._album_cover_text(
-                            album, album_id, album_dir, chapter_entries
-                        )
+                    # 每个 PDF 分册都带漫画信息页，便于单独辨认分册。
+                    cover_text = self._album_cover_text(
+                        album, album_id, album_dir, chapter_entries
+                    )
                 try:
                     stem = self._file_stem_for_entries(
                         chapter_entries, album_id, album_title, album_dir
@@ -2467,8 +2536,6 @@ class JmComicPlugin(Star):
                     yield self._plain(event, "❌ 生成文件失败（没有可用图片）")
                     target_failed += len(group)
                     continue
-                if output_format == "pdf":
-                    pdf_cover_pending = False
 
                 size_mb = output_path.stat().st_size / 1024 / 1024
                 # 按约 2MB/s 估算 QQ 上传耗时，并计入发送间隔
@@ -2511,7 +2578,7 @@ class JmComicPlugin(Star):
                         import random
                         yield self._plain(event, random.choice(teases))
             if target_failed:
-                failed.append(f"{raw}(部分章节失败)" if target_sent else raw)
+                failed.append(f"{raw}(部分话失败)" if target_sent else raw)
 
             if quota_stopped:
                 break
@@ -2761,12 +2828,12 @@ class JmComicPlugin(Star):
                 parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
                 if parent_id:
                     parent_line = (
-                        f"该章节所属漫画：JM{parent_id}\n"
-                        f"请用 /jm {album_id} 下载该章节，或用 /jmv {parent_id} 查看漫画。"
+                        f"该话所属漫画：JM{parent_id}\n"
+                        f"请用 /jm {album_id} 下载该话，或用 /jmv {parent_id} 查看漫画。"
                     )
                 else:
                     parent_line = (
-                        f"请用 /jm {album_id} 下载该章节；"
+                        f"请用 /jm {album_id} 下载该话；"
                         "章节所属漫画ID未能识别，可先执行 /jm 后查看缓存目录。"
                     )
                 yield self._plain(event,
@@ -2835,17 +2902,21 @@ class JmComicPlugin(Star):
             if '-work' not in options:
                 lines.append(f"  📚 作品:  {work_str}")
             lines.append(sep)
-            lines.append(f"  📑 章节 ({len(chapters)}):")
+            lines.append(f"  📑 共{len(chapters)}话：")
             for i, photo in enumerate(chapters[:10]):
-                photo_title = self._safe_text(getattr(photo, 'name', ''), self.convert_title) or f"第{i+1}章"
-                lines.append(f"     {photo_title[:50]}  (id: {photo.photo_id})")
+                lines.append(f"     {self._format_chapter_line(photo, i + 1)}")
             if len(chapters) > 10:
-                lines.append(f"     ... 共{len(chapters)}章，仅显示前10章")
+                lines.append(
+                    f"     ... 共{len(chapters)}话，仅显示前10话"
+                    f"（查看全部：/jmlist {album_id}）"
+                )
             if not chapters:
-                lines.append("     暂无章节")
+                lines.append("     暂无话")
+            else:
+                lines.append("     💡 前方编号为网站话序号，方括号后为漫画自身的章节标题（两者可能不同）")
             lines.append(sep)
             lines.append(
-                f"💡 /jmlist {album_id} 章节 | /jm {album_id} PDF | /jmzip {album_id} ZIP"
+                f"💡 /jmlist {album_id} 话列表 | /jm {album_id} PDF | /jmzip {album_id} ZIP"
             )
 
             reply = "\n".join(lines)
@@ -2868,11 +2939,11 @@ class JmComicPlugin(Star):
         except Exception as e:
             yield self._plain(event, self._handle_jm_exception(e, "查询"))
 
-    # ========== /jmlist 章节列表 ==========
+    # ========== /jmlist 话列表 ==========
     @filter.command("jmlist")
     async def jm_chapter_list(self, event: AstrMessageEvent):
-        """查看漫画章节列表，用法：/jmlist <漫画id> [页码]
-        只发送章节文本，不发送封面；封面请用 /jmv <漫画id> 查看
+        """查看漫画话列表，用法：/jmlist <漫画id> [页码]
+        只发送话文本，不发送封面；封面请用 /jmv <漫画id> 查看
         """
         if not self._check_permission(event):
             yield self._plain(event, self._permission_denied_text(event))
@@ -2883,7 +2954,7 @@ class JmComicPlugin(Star):
             yield self._plain(event,
                 "用法：/jmlist <漫画id> [页码]\n"
                 "示例：/jmlist 123456\n"
-                "      /jmlist 123456 2     查看第2页章节"
+                "      /jmlist 123456 2     查看第2页话"
             )
             return
 
@@ -2903,7 +2974,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, f"⚠️ {e}\n用法：/jmlist {album_id} [页码]")
             return
 
-        yield self._plain(event, f"📚 获取 JM{album_id} 的章节列表...")
+        yield self._plain(event, f"📚 获取 JM{album_id} 的话列表...")
 
         try:
             client = self._new_logged_client()
@@ -2913,12 +2984,12 @@ class JmComicPlugin(Star):
                 parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
                 if parent_id:
                     parent_line = (
-                        f"该章节所属漫画：JM{parent_id}\n"
-                        f"请用 /jm {album_id} 下载该章节，或用 /jmv {parent_id} 查看漫画。"
+                        f"该话所属漫画：JM{parent_id}\n"
+                        f"请用 /jm {album_id} 下载该话，或用 /jmv {parent_id} 查看漫画。"
                     )
                 else:
                     parent_line = (
-                        f"请用 /jm {album_id} 下载该章节；"
+                        f"请用 /jm {album_id} 下载该话；"
                         "章节所属漫画ID未能识别，可先执行 /jm 后查看缓存目录。"
                     )
                 yield self._plain(event,
@@ -2931,16 +3002,16 @@ class JmComicPlugin(Star):
 
             if not chapters:
                 yield self._plain(event,
-                    f"⚠️ JM{album_id} 没有章节列表。\n"
+                    f"⚠️ JM{album_id} 没有话列表。\n"
                     "请检查 ID 是否正确；如果是章节ID，请用 /jm <章节id> 下载。"
                 )
                 return
 
-            page_size = 20
+            page_size = self.per_page
             total_pages = max(1, math.ceil(len(chapters) / page_size))
             if page_num > total_pages:
                 yield self._plain(event,
-                    f"⚠️ JM{album_id} 共 {len(chapters)} 章，只有 {total_pages} 页，"
+                    f"⚠️ JM{album_id} 共 {len(chapters)} 话，只有 {total_pages} 页，"
                     f"已到最后一页（/jmlist {album_id} {total_pages}）"
                 )
                 return
@@ -2951,19 +3022,18 @@ class JmComicPlugin(Star):
 
             lines = [
                 f"📚 {album_title}",
-                f"🆔 JM{album_id} | 共{len(chapters)}章 | 第{page_num}/{total_pages}页",
+                f"🆔 JM{album_id} | 共{len(chapters)}话 | 第{page_num}/{total_pages}页",
                 "━━━━━━━━━━━━━━━",
             ]
             for i, photo in enumerate(page_items):
-                index = start + i + 1
-                photo_title = self._safe_text(getattr(photo, 'name', ''), self.convert_title)
-                if not photo_title:
-                    photo_title = f"第{index}章"
-                lines.append(f"{index}. [JM{photo.photo_id}] {photo_title[:50]}")
+                lines.append(self._format_chapter_line(photo, start + i + 1))
 
+            lines.append(
+                "💡 前方编号为网站话序号，方括号后为漫画自身的章节标题（两者可能不同）"
+            )
             if page_num < total_pages:
                 lines.append(f"\n下一页：/jmlist {album_id} {page_num + 1}")
-            lines.append(f"💡 下载单章：/jm <章节id>；下载全本：/jm {album_id}")
+            lines.append(f"💡 下载单话：/jm <章节id>；下载全本：/jm {album_id}")
             text = self._output_text(event, "\n".join(lines))
 
             # 直接发送，便于捕获 QQ 的“消息内容违规”异常；再用日志兜底检测静默拦截
@@ -2974,25 +3044,25 @@ class JmComicPlugin(Star):
                 violation = self._is_violation_error(send_err) or self._log_has_violation(mark)
                 if violation:
                     yield self._plain(event,
-                        "⚠️ 章节列表被 QQ 判定为消息内容违规，已拦截。\n"
+                        "⚠️ 话列表被 QQ 判定为消息内容违规，已拦截。\n"
                         "标题已做敏感词转拼音；可以换一页重试，或用 /jmv <漫画id> -pic 看详情。"
                     )
                 else:
                     logger.warning(f"jmlist 发送失败: {send_err}")
-                    yield self._plain(event, f"❌ 章节列表发送失败：{send_err}")
+                    yield self._plain(event, f"❌ 话列表发送失败：{send_err}")
                 return
 
             # 给平台发送/日志落盘留一点时间，再检查是否静默拦截
             await asyncio.sleep(1.5)
             if self._log_has_violation(mark):
                 yield self._plain(event,
-                    "⚠️ 日志检测到章节列表触发了“消息内容违规”，可能已被 QQ 拦截。\n"
+                    "⚠️ 日志检测到话列表触发了“消息内容违规”，可能已被 QQ 拦截。\n"
                     "可以换一页重试，标题已做敏感词转拼音。"
                 )
                 return
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取章节列表"))
+            yield self._plain(event, self._handle_jm_exception(e, "获取话列表"))
 
     # ========== /jm 下载 PDF（/jmphoto 为兼容别名） ==========
     @filter.command("jm", alias={"jmphoto"})
@@ -3016,26 +3086,26 @@ class JmComicPlugin(Star):
                 "  /jmw 原作名 [页码] [排序]   按原作搜索\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📖 详情：\n"
-                "  /jmv <漫画id> [选项]       查详情(含章节/标签/人物/作品)\n"
+                "  /jmv <漫画id> [选项]       查详情(含话列表/标签/人物/作品)\n"
                 "    选项：-author -work -role -tag -pic(不发封面)\n"
-                "  /jmlist <漫画id> [页码]    查看全部章节（纯文本，不发封面）\n"
+                "  /jmlist <漫画id> [页码]    查看全部话（纯文本，不发封面）\n"
                 "  /jmc <漫画id> [页码]        看评论(翻页/回复/剧透，超页自动提示)\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⬇️ 下载：\n"
                 "  /jm <漫画id>                下载整本，PDF按后台页数上限自动分册\n"
-                "  /jm <章节id>                自动识别为单章，发一个PDF\n"
-                "  /jm <章节id> -c 1:201-      章节ID页段续传（章节号固定写1）\n"
+                "  /jm <章节id>                自动识别为单话，发一个PDF\n"
+                "  /jm <章节id> -c 1:201-      章节ID页段续传（话序号固定写1）\n"
                 "  /jm id1,id2,id3             批量下载，支持漫画/章节ID混合\n"
-                "  /jm <id> -c 31              只下第31章\n"
-                "  /jm <id> -c 31-40           下第31到40章（范围倒置会自动纠正并提示）\n"
-                "  /jm <id> -c 31,35,40        下指定章节\n"
-                "  /jm <id> -c 5:201-          从第5章第201页继续（页段续传）\n"
-                "  /jm <id> -c 5:201-400       只下第5章第201-400页\n"
-                "  /jmzip <漫画id>             下载整本，按后台章数自动合并ZIP\n"
-                "  /jmzip <章节id>             自动识别为单章，发一个ZIP\n"
+                "  /jm <id> -c 31              只下第31话\n"
+                "  /jm <id> -c 31-40           下第31到40话（范围倒置会自动纠正并提示）\n"
+                "  /jm <id> -c 31,35,40        下指定话\n"
+                "  /jm <id> -c 5:201-          从第5话第201页继续（页段续传）\n"
+                "  /jm <id> -c 5:201-400       只下第5话第201-400页\n"
+                "  /jmzip <漫画id>             下载整本，按后台话数自动合并ZIP\n"
+                "  /jmzip <章节id>             自动识别为单话，发一个ZIP\n"
                 "  /jmzip id1,id2,id3          批量下载，支持漫画/章节ID混合\n"
-                "  /jmzip <id> -c 31-40        下第31到40章\n"
-                "  /jmzip <id> -c 31,35,40     下指定章节\n"
+                "  /jmzip <id> -c 31-40        下第31到40话\n"
+                "  /jmzip <id> -c 31,35,40     下指定话\n"
                 "  /jmphoto <id>               等同 /jm <id>（兼容旧命令）\n"
                 "  /jmstop                     停止当前用户正在进行的下载\n"
                 "━━━━━━━━━━━━━━━\n"
@@ -3056,22 +3126,23 @@ class JmComicPlugin(Star):
                 "📊 其他：\n"
                 "  /jmwhoami                   查看自己的ID（配置号主用，所有人可用）\n"
                 "  /jmrank day/week/month [页码]  排行榜\n"
-                "  /jmhis [页码]               下载历史（每页20条）\n"
-                "    用法：/jmhis clear 清空历史 | /jmhis -all 查看全部成员(管理员)\n"
+                "  /jmhis [页码]               下载历史（每页{per_page}条）\n"
+                "    用法：/jmhis clear 清空历史 | /jmhis -all [页码] 查看全部成员(管理员，每用户每页10条)\n"
                 "  /jmdomain                   查看可用域名\n"
                 "  /jmupdate                   查看更新日志\n"
                 "  /jmrand [关键词]            随机抽一个\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
-                "💾 下载缓存：JM{{漫画id}}/P{{章节id}}/图片，标题存入 metadata.json，默认保留 {cache_days} 天\n"
-                "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性并在第一册加封面\n"
-                "📄 PDF：每 {pdf_page_limit} 页一册（整章优先，单章超限按页切分）\n"
-                "🗜️ ZIP：最多 {zip_group_size} 章/册，{zip_page_text}\n"
+                "💾 下载缓存：JM{{漫画id}}/P{{章节id}}_第N话/图片，标题存入 metadata.json，默认保留 {cache_days} 天\n"
+                "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性，每册都加漫画信息页\n"
+                "📄 PDF：每 {pdf_page_limit} 页一册（整话优先，单话超限按页切分）\n"
+                "🗜️ ZIP：最多 {zip_group_size} 话/册，{zip_page_text}\n"
                 "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
                 "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）\n"
                 "⏳ 文件限额：每日{daily_limit_text}、每小时{hourly_limit_text}（0=不限）".format(
                     client_type=self.client_type.upper(),
+                    per_page=self.per_page,
                     cache_days=self.cache_days,
                     pdf_page_limit=self.pdf_page_limit,
                     zip_group_size=self.zip_group_size,
@@ -3206,7 +3277,7 @@ class JmComicPlugin(Star):
                 f"📖 {title}\n"
                 f"🆔 JM{album_id}"
                 f"{tag_str}\n"
-                f"📄 {len(chapters)}章 / {page_count}页\n\n"
+                f"📄 {len(chapters)}话 / {page_count}页\n\n"
                 f"发 /jm {album_id} 下载"
             )
 
@@ -3359,8 +3430,8 @@ class JmComicPlugin(Star):
                 "      /jmzip 123456 -c 31-40\n"
                 "      /jmzip 123456 -c 5:201-\n"
                 "      /jmzip 123,456\n"
-                f"说明：多章按后台配置合并 ZIP（当前最多 {self.zip_group_size} 章、"
-                f"{self._zip_page_hint()}）；单章目标发一个 ZIP"
+                f"说明：多话按后台配置合并 ZIP（当前最多 {self.zip_group_size} 话、"
+                f"{self._zip_page_hint()}）；单话目标发一个 ZIP"
             )
             return
 
@@ -3786,8 +3857,24 @@ class JmComicPlugin(Star):
             yield self._plain(event, "🧹 你的下载历史已清空")
             return
 
-        # /jmhis -all：管理员查看所有成员的历史
-        if len(args) >= 2 and args[1].lower() in ("-all", "all"):
+        # /jmhis -all：管理员查看所有成员的历史，页码与 -all 可任意顺序
+        show_all = any(token.lower() in ("-all", "all") for token in args[1:])
+        page_num = 1
+        page_seen = False
+        if show_all:
+            for token in args[1:]:
+                if token.lower() in ("-all", "all"):
+                    continue
+                if page_seen:
+                    yield self._plain(event, "用法：/jmhis [页码] -all\n页码只能填一个")
+                    return
+                try:
+                    page_num = self._parse_positive_page(token)
+                    page_seen = True
+                except ValueError as e:
+                    yield self._plain(event, f"⚠️ {e}\n用法：/jmhis [页码] -all")
+                    return
+
             is_admin = event.is_admin() if hasattr(event, 'is_admin') else getattr(event, 'role', '') == 'admin'
             if not is_admin:
                 yield self._plain(event, "⚠️ 只有管理员可以使用 /jmhis -all")
@@ -3796,28 +3883,52 @@ class JmComicPlugin(Star):
             if not data:
                 yield self._plain(event, "还没有任何下载记录")
                 return
+            page_size = 10
+            active_users = [(uid, items) for uid, items in data.items() if items]
+            if not active_users:
+                yield self._plain(event, "还没有任何下载记录")
+                return
+            total_users = len(active_users)
+            total_records = sum(len(items) for _uid, items in active_users)
+            total_pages = max(
+                1,
+                max(math.ceil(len(items) / page_size) for _uid, items in active_users),
+            )
+            if page_num > total_pages:
+                yield self._plain(event,
+                    f"⚠️ 全部成员历史共 {total_records} 条，只有 {total_pages} 页，"
+                    f"已到最后一页（/jmhis -all {total_pages}）"
+                )
+                return
+
             lines = []
-            total_records = 0
-            total_users = 0
-            for uid, items in data.items():
-                if not items:
-                    continue
-                total_users += 1
-                total_records += len(items)
-                lines.append(f"👤 用户 {uid}（{len(items)}条）")
-                for index, item in enumerate(items, 1):
+            for uid, items in active_users:
+                start = (page_num - 1) * page_size
+                page_items = items[start:start + page_size]
+                lines.append(
+                    f"👤 用户 {uid}（共{len(items)}条，本页{len(page_items)}条）"
+                )
+                if not page_items:
+                    lines.append("  （本页无记录）")
+                for offset, item in enumerate(page_items, 1):
                     title = self._safe_text(item.get('title', ''), self.convert_title)
                     lines.append(
-                        f"  {index}. [JM{item.get('id', '')}] {title[:30]}  "
+                        f"  {start + offset}. [JM{item.get('id', '')}] {title[:30]}  "
                         f"({item.get('size_mb', '?')}MB)  {item.get('time', '')}"
                     )
                 lines.append("")
             reply = (
-                f"📜 全部成员下载历史（{total_users}人，共{total_records}条）\n\n"
+                f"📜 全部成员下载历史（{total_users}人，共{total_records}条，"
+                f"第{page_num}/{total_pages}页）\n\n"
                 + "\n".join(lines)
             ).rstrip()
-            if len(reply) > 3500:
-                reply = reply[:3450] + "\n...（消息过长，已截断）"
+            nav = []
+            if page_num > 1:
+                nav.append(f"上一页：/jmhis -all {page_num - 1}")
+            if page_num < total_pages:
+                nav.append(f"下一页：/jmhis -all {page_num + 1}")
+            if nav:
+                reply += "\n\n" + "\n".join(nav)
             yield self._plain(event, reply)
             return
 
@@ -3835,7 +3946,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, "还没有下载记录")
             return
 
-        page_size = 20
+        page_size = self.per_page
         total_pages = max(1, math.ceil(len(history) / page_size))
         if page_num > total_pages:
             yield self._plain(event,
@@ -3910,7 +4021,7 @@ class JmComicPlugin(Star):
             if self._looks_like_chapter_album(album):
                 parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
                 parent_line = (
-                    f"该章节所属漫画：JM{parent_id}，可用 /jmv {parent_id} 查看。\n"
+                    f"该话所属漫画：JM{parent_id}，可用 /jmv {parent_id} 查看。\n"
                     if parent_id else ""
                 )
                 yield self._plain(event,
@@ -4343,17 +4454,17 @@ class JmComicPlugin(Star):
                             self.convert_title,
                         ) or f"JM{album_id}"
                         lines = [
-                            f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 章"
+                            f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 话"
                         ]
                         for i, photo in enumerate(new_photos[:10], 1):
                             chapter_name = self._safe_text(
                                 getattr(photo, "name", "") or "",
                                 self.convert_title,
                             )
-                            index = getattr(photo, "index", None) or i
-                            lines.append(f"  第{index}章 {chapter_name}".rstrip())
+                            index = self._photo_position(photo, i)
+                            lines.append(f"  第{index}话 {chapter_name}".rstrip())
                         if len(new_photos) > 10:
-                            lines.append(f"  ... 共 {len(new_photos)} 章")
+                            lines.append(f"  ... 共 {len(new_photos)} 话")
                         lines.append("")
                         lines.append(f"/jmv {album_id} 查看详情")
                         text = self._safe_text("\n".join(lines))
@@ -4421,7 +4532,7 @@ class JmComicPlugin(Star):
                     (info or {}).get("title", "") or "未知", self.convert_title
                 )
                 count = len((info or {}).get("photo_ids") or [])
-                lines.append(f"  JM{album_id} {title}（{count}章）")
+                lines.append(f"  JM{album_id} {title}（{count}话）")
             lines.append("")
             lines.append("💡 /jmsub <漫画id> 更新基线，/jmsub del <漫画id> 取消")
             yield self._plain(event, "\n".join(lines))
@@ -4464,7 +4575,7 @@ class JmComicPlugin(Star):
             )
             return
 
-        yield self._plain(event, f"🔔 正在读取 JM{album_id} 的章节信息...")
+        yield self._plain(event, f"🔔 正在读取 JM{album_id} 的话信息...")
         try:
             client = await asyncio.to_thread(self._new_logged_client)
             album = await asyncio.to_thread(client.get_album_detail, album_id)
@@ -4487,7 +4598,7 @@ class JmComicPlugin(Star):
             snapshot = self._subscription_snapshot(album)
             if not snapshot["photo_ids"]:
                 yield self._plain(event,
-                    f"⚠️ JM{album_id} 没有章节列表，暂时无法订阅"
+                    f"⚠️ JM{album_id} 没有话列表，暂时无法订阅"
                 )
                 return
 
@@ -4505,13 +4616,13 @@ class JmComicPlugin(Star):
                     if self.subscribe_interval < 3600
                     else f"每 {self.subscribe_interval // 3600} 小时检查一次"
                 )
-                hint = f"后台会{interval_text}，发现新章节后推送到当前会话。"
+                hint = f"后台会{interval_text}，发现新话后推送到当前会话。"
             else:
                 hint = "后台自动检查已关闭（subscribe_interval=0），当前只保存订阅，不会推送。"
             yield self._plain(event,
                 f"{'🔄 已更新订阅基线' if existed else '✅ 已订阅'}："
                 f"《{title}》JM{album_id}\n"
-                f"当前 {len(snapshot['photo_ids'])} 章。{hint}"
+                f"当前 {len(snapshot['photo_ids'])} 话。{hint}"
             )
         except Exception as e:
             yield self._plain(event, self._handle_jm_exception(e, "订阅"))
