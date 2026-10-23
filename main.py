@@ -28,6 +28,7 @@ from .core.config import PluginSettings
 from .core.state import PluginState
 from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
+from .core.parsing import extract_id, parse_positive_page
 
 
 class PageEventProxy:
@@ -1099,7 +1100,7 @@ class JmComicPlugin(Star):
         if len(token) > 1 and token[0].lower() in ("a", "p") and token[1:].isdigit():
             prefix = token[0].lower()
             token = token[1:]
-        target_id = self._extract_id(token) or token
+        target_id = extract_id(token) or token
         return prefix, str(target_id)
 
     async def _resolve_target(self, client, token):
@@ -2433,15 +2434,6 @@ class JmComicPlugin(Star):
             raise ValueError("关键词不能为空")
         return keyword, qq_page, order_by
 
-    @staticmethod
-    def _parse_positive_page(token, label="页码"):
-        """严格解析正整数页码，0/负数/字母/符号都会抛出中文错误。"""
-        if not re.fullmatch(r"\d+", str(token).strip()):
-            raise ValueError(f"{label}必须是大于 0 的整数")
-        value = int(token)
-        if value < 1:
-            raise ValueError(f"{label}必须是大于 0 的整数")
-        return value
 
     async def _render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms"):
         """通用搜索结果渲染：分页 + 切片 + 输出"""
@@ -2560,12 +2552,6 @@ class JmComicPlugin(Star):
         except Exception as e:
             yield self._plain(event, self.client.handle_exception(e, "搜索"))
 
-    # ========== 工具：从消息里提取数字ID ==========
-    def _extract_id(self, message_str: str) -> str:
-        """从消息字符串里提取第一个连续数字，作为漫画ID"""
-        import re
-        match = re.search(r'\d+', message_str)
-        return match.group() if match else None
 
     # ========== /jmv 查详情 ==========
     @filter.command("jmv")
@@ -2793,7 +2779,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, "用法：/jmlist <漫画id> [页码]\n页码只能填一个")
             return
         try:
-            page_num = self._parse_positive_page(args[2]) if len(args) >= 3 else 1
+            page_num = parse_positive_page(args[2]) if len(args) >= 3 else 1
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmlist {album_id} [页码]")
             return
@@ -3714,7 +3700,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, "用法：/jmrank day|week|month [页码]\n页码只能填一个")
             return
         try:
-            qq_page = self._parse_positive_page(args[2]) if len(args) >= 3 else 1
+            qq_page = parse_positive_page(args[2]) if len(args) >= 3 else 1
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmrank {rank_type} [页码]")
             return
@@ -3795,7 +3781,7 @@ class JmComicPlugin(Star):
                     yield self._plain(event, "用法：/jmhis [页码] -all\n页码只能填一个")
                     return
                 try:
-                    page_num = self._parse_positive_page(token)
+                    page_num = parse_positive_page(token)
                     page_seen = True
                 except ValueError as e:
                     yield self._plain(event, f"⚠️ {e}\n用法：/jmhis [页码] -all")
@@ -3866,7 +3852,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, "用法：/jmhis [页码]\n页码只能填一个")
             return
         try:
-            page_num = self._parse_positive_page(args[1]) if len(args) >= 2 else 1
+            page_num = parse_positive_page(args[1]) if len(args) >= 2 else 1
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmhis [页码]")
             return
@@ -3936,7 +3922,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, "用法：/jmc <漫画id> [页码]\n页码只能填一个")
             return
         try:
-            page_num = self._parse_positive_page(args[2]) if len(args) >= 3 else 1
+            page_num = parse_positive_page(args[2]) if len(args) >= 3 else 1
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmc {album_id} [页码]")
             return
