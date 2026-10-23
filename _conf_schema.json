@@ -7,18 +7,29 @@
       "api",
       "html"
     ],
+    "labels": [
+      "API 客户端（推荐）",
+      "HTML 客户端"
+    ],
+    "subtitles": [
+      "功能全：收藏 / 评论翻页 / 签到 / 域名自动更新",
+      "支持分类筛选，但收藏与评论功能受限"
+    ],
     "hint": "api=推荐，支持收藏、评论翻页和签到，不支持分类筛选；html=支持分类筛选，但收藏和评论功能受限。切换后需重载插件。"
   },
   "username": {
     "type": "string",
     "default": "",
     "description": "JM 用户名",
+    "obvious_hint": true,
     "hint": "禁漫天堂账号用户名；留空则不登录。只用于 JM 账号功能，不是号主 ID。"
   },
   "password": {
     "type": "string",
     "default": "",
     "description": "JM 密码",
+    "secret": true,
+    "obvious_hint": true,
     "hint": "禁漫天堂账号密码；只保存在本机插件配置中，不会写入仓库。"
   },
   "domain": {
@@ -43,6 +54,7 @@
     "type": "string",
     "default": "",
     "description": "号主 ID",
+    "obvious_hint": true,
     "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。QQ 官方机器人填 openid，不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
   },
   "photo_threads": {
@@ -66,6 +78,17 @@
       "step": 1
     },
     "hint": "单话内同时下载的图片数量，默认 5。网络不稳定或经常失败时建议降低。"
+  },
+  "send_interval": {
+    "type": "float",
+    "default": 1.5,
+    "description": "文件发送间隔",
+    "slider": {
+      "min": 0,
+      "max": 10,
+      "step": 0.5
+    },
+    "hint": "每个 PDF/ZIP 发送后的等待秒数，默认 1.5 秒。调大可降低触发频率限制的概率，但发送更慢。"
   },
   "per_page": {
     "type": "int",
@@ -148,12 +171,14 @@
     "type": "bool",
     "default": false,
     "description": "启用代理",
+    "obvious_hint": true,
     "hint": "开启后在访问禁漫站点时使用下方代理地址；关闭时显式直连，避免系统代理环境变量干扰。修改后需重载插件。"
   },
   "proxy_url": {
     "type": "string",
     "default": "",
     "description": "代理地址",
+    "obvious_hint": true,
     "hint": "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；启用代理时必填。SOCKS5 需要 PySocks 依赖。"
   },
   "cache_days": {
@@ -271,16 +296,5 @@
       "step": 1
     },
     "hint": "本插件每小时最多发送的文件数，默认 0（不限制）。超限后停止发送并提示用 -c 继续。"
-  },
-  "send_interval": {
-    "type": "float",
-    "default": 1.5,
-    "description": "文件发送间隔",
-    "slider": {
-      "min": 0,
-      "max": 10,
-      "step": 0.5
-    },
-    "hint": "每个 PDF/ZIP 发送后的等待秒数，默认 1.5 秒。调大可降低触发频率限制的概率，但发送更慢。"
   }
 }

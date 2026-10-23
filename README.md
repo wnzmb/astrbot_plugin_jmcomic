@@ -1,6 +1,37 @@
-# AstrBot JMComic 插件
+<div align="center">
+  <img src="logo.png" alt="AstrBot JMComic Plugin Logo" width="160" />
+</div>
 
-漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、评论翻页、下载 PDF/ZIP、批量下载、按话选择、下载进度查询、列表/搜索/评论/历史翻页、请求级域名重试、HTTP/SOCKS5 代理、每日签到、收藏夹管理与 CSV 导出、订阅更新推送、群白名单、排行榜、随机抽漫、下载历史、敏感词自动转拼音、简繁自动转换、缓存元数据与标题打包等功能，所有参数均可在配置页自定义。
+# <div align="center">AstrBot JMComic 插件</div>
+
+<div align="center">
+  <strong>全能型 JM 漫画搜索 · 下载 · 管理 QQ 机器人插件</strong>
+</div>
+
+<br>
+<div align="center">
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.8-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
+  <a href="https://github.com/hect0x7/JMComic-Crawler-Python"><img src="https://img.shields.io/badge/JMCOMIC-≥2.7.9-9C27B0?style=for-the-badge" alt="JMComic"></a>
+  <a href="https://github.com/wnzmb/astrbot_plugin_jmcomic"><img src="https://img.shields.io/badge/UPDATED-2026.10.23-2196F3?style=for-the-badge" alt="Updated"></a>
+</div>
+
+一个为 [AstrBot](https://astrbot.app) 开发的 JM 漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、评论翻页、下载 PDF/ZIP、批量下载、按话选择、下载进度查询、列表/搜索/评论/历史翻页、请求级域名重试、HTTP/SOCKS5 代理、每日签到、收藏夹管理与 CSV 导出、订阅更新推送、群白名单、排行榜、随机抽漫、下载历史、敏感词自动转拼音、简繁自动转换、缓存元数据与标题打包等功能，所有参数均可在配置页自定义。
+
+## ✨ 核心特性
+
+- 🔍 **多维度搜索** — 全站 / 作者 / 标签 / 角色 / 原作搜索，支持简繁双搜索与多种排序
+- 📖 **详情与评论** — 漫画详情、话列表（每话带页数）、评论翻页与剧透标记
+- ⬇️ **灵活下载** — 整本 / 单话 / 批量 / 按话选择（`-c`）/ 最新 N 话（`-latest N`）/ 页段续传
+- 📦 **智能打包** — PDF 按页数自动分册、ZIP 按话数 + 页数合并，文件名统一规范，分册带信息页
+- 📊 **实时进度** — `/jmnow` 查询当前下载进度（`-all` 管理员查看全部用户），`/jmstop` 停止任务
+- 🔄 **自动翻页** — 列表 / 搜索 / 评论 / 历史 / 排行榜，`/jmnext` 或"下一页/下页"一键翻页
+- 🔐 **账号功能** — 每日签到、收藏夹管理与 CSV 导出（号主专属，30 秒二次确认）
+- 🔔 **更新订阅** — `/jmsub` 后台检查新话并主动推送
+- 🛡️ **安全防护** — 敏感词自动转拼音、QQ 文件限额、群白名单、HTTP/SOCKS5 代理与请求级域名重试
+- ⚙️ **高度可配置** — 所有参数均可在 AstrBot 管理面板配置页自定义，支持滑杆 / 下拉 / 代码编辑器
 
 ---
 
@@ -28,7 +59,7 @@
    - 代理 `use_proxy` / `proxy_url`：默认关闭直连；开启后填写 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`
    - 下载重试无需配置：同步请求走域名轮询，整本下载再保留 3 次外层任务重试，已下载图片自动复用缓存
    - 下载历史保留条数 `history_max`：默认 0，填 `0` 表示保留所有历史
-   - 自定义敏感词 `custom_sensitive`：每行 `原文=替换拼音`，长词优先匹配；默认内置常用词，可自行增删，留空则只保留内置的 `X交`/`X乳` 规则
+   - 自定义敏感词 `custom_sensitive`：每行 `原文=替换拼音`，长词优先匹配；默认留空，留空时只保留内置的 `X交`/`X乳` 规则；填写的词会在内置规则之外追加
 
 > 配置页使用“短标题 + 下方详细说明”的布局，数值项可以直接拖滑杆；说明文字不会再挤在标题里被截断。
 
@@ -273,15 +304,46 @@ D:\Program Files\AstrBot\backend\python\python.exe -m unittest discover -s tests
 
 ## 致谢
 
-本插件基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，感谢原作者。
+本项目基于或参考了以下开源项目：
 
----
+- [AstrBot](https://github.com/AstrBotDevs/AstrBot) — 机器人框架
+- [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) — JMComic 库
+- [img2pdf](https://github.com/josch/img2pdf) — PDF 合成
+- [reportlab](https://www.reportlab.com/) — PDF 兜底合成
+- [PySocks](https://github.com/Anorov/PySocks) — SOCKS5 代理
+- [pypinyin](https://github.com/mozillazg/python-pinyin) — 敏感词转拼音
+- [zhconv](https://github.com/taoist/zhconv) — 简繁转换
+- [Pillow](https://python-pillow.org/) — 图片处理
 
 ## 许可证
 
+[![license](https://img.shields.io/badge/license-MIT-009688?style=for-the-badge)](LICENSE)
+
+本项目使用 **MIT License** 开源：
+
+```
 MIT License
 
----
+Copyright (c) 2024 wnzmb
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ## 免责声明
 
