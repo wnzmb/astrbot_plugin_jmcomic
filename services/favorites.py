@@ -26,15 +26,37 @@ class FavoritesService:
         except Exception:
             pass
 
+    async def _call(self, client, method_name, *args, **kwargs):
+        """调用客户端方法；遇到 401 时刷新登录态并重试一次。"""
+        try:
+            method = getattr(client, method_name)
+            return await asyncio.to_thread(method, *args, **kwargs)
+        except Exception as e:
+            if not self.client.is_auth_error(e):
+                raise
+            fresh = self.client.refresh_client()
+            method = getattr(fresh, method_name)
+            return await asyncio.to_thread(method, *args, **kwargs)
+
+    async def fetch_folder(self, client, page=1, folder_id='0'):
+        """读取一页收藏夹，供 /jmfav 列表使用。"""
+        return await self._call(client, 'favorite_folder', page, folder_id=folder_id)
+
+    async def add_favorite(self, client, album_id, folder_id='0'):
+        return await self._call(client, 'add_favorite_album', album_id, folder_id=folder_id)
+
+    async def delete_favorite(self, client, album_id, folder_id='0'):
+        return await self._call(client, 'delete_favorite_album', album_id, folder_id=folder_id)
+
     async def favorite_state(self, client, album_id):
         """返回 (是否已收藏, 漫画详情)"""
         self.clear_client_cache(client)
-        album = await asyncio.to_thread(client.get_album_detail, album_id)
+        album = await self._call(client, 'get_album_detail', album_id)
         return bool(getattr(album, 'is_favorite', False)), album
 
     async def render_favorites(self, client, folder_id='0', title='⭐ 当前收藏', limit=10):
         """渲染收藏夹内容，操作后自动调用"""
-        page = await asyncio.to_thread(client.favorite_folder, 1, folder_id=folder_id)
+        page = await self._call(client, 'favorite_folder', 1, folder_id=folder_id)
         total = getattr(page, 'total', None)
         items = list(page.iter_id_title_tag())
         if not items:
@@ -71,6 +93,16 @@ class FavoritesService:
                 ))
         return rows
 
+    async def collect_rows_async(self, client, folder_id):
+        """异步收集收藏夹；401 时刷新登录态重试一次。"""
+        try:
+            return await asyncio.to_thread(self.collect_rows, client, folder_id)
+        except Exception as e:
+            if not self.client.is_auth_error(e):
+                raise
+            fresh = self.client.refresh_client()
+            return await asyncio.to_thread(self.collect_rows, fresh, folder_id)
+
     @staticmethod
     def write_csv(path, rows):
         """写 CSV；utf-8-sig 方便 Windows Excel 直接打开。"""
@@ -92,7 +124,7 @@ class FavoritesService:
             if folder_id != "0":
                 folder_name = f"收藏夹{folder_id}"
                 try:
-                    page = await asyncio.to_thread(client.favorite_folder, 1)
+                    page = await self._call(client, 'favorite_folder', 1)
                     for fid, fname in page.iter_folder_id_name():
                         if str(fid) == str(folder_id):
                             folder_name = fname or folder_name
@@ -101,9 +133,7 @@ class FavoritesService:
                     logger.warning(f"读取收藏夹名称失败: {e}")
 
             yield self.messaging.plain(event, f"📤 正在读取收藏夹「{folder_name}」...")
-            rows = await asyncio.to_thread(
-                self.collect_rows, client, folder_id
-            )
+            rows = await self.collect_rows_async(client, folder_id)
             if not rows:
                 yield self.messaging.plain(event, f"ℹ️ 收藏夹「{folder_name}」为空，没有可导出的内容")
                 return

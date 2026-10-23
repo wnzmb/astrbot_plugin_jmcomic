@@ -5,12 +5,111 @@ import re
 from datetime import datetime
 
 from astrbot.api import logger
+from jmcomic import JmCryptoTool, JmDailyCheckinResp
 
 
 class CheckinService:
     def __init__(self, settings):
         self.settings = settings
 
+    # ========== 签到接口兼容 ==========
+    @staticmethod
+    def _decode_checkin_data(data, ts):
+        """解析 /daily_chk 的 data。
+
+        jmcomic 2.7.9 默认把 data 当 base64 字符串；实测首次签到成功时
+        服务端可能返回 list，导致 b64decode(list) 抛 TypeError。这里同时
+        兼容字符串、list 和已经是 dict 的响应。
+        """
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            if not data:
+                return {}
+            # 可能是被拆成多段的 base64，也可能是明文消息列表
+            candidates = []
+            if all(isinstance(item, str) for item in data):
+                candidates.append("".join(data))
+                candidates.extend(data)
+            for candidate in candidates:
+                try:
+                    text = JmCryptoTool.decode_resp_data(candidate, ts)
+                    parsed = json.loads(text)
+                except Exception:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+            messages = []
+            for item in data:
+                if isinstance(item, dict):
+                    messages.append(str(item.get("msg") or item))
+                else:
+                    messages.append(str(item))
+            return {"msg": "；".join(messages), "status": "ok"}
+        if isinstance(data, str):
+            try:
+                text = JmCryptoTool.decode_resp_data(data, ts)
+            except Exception:
+                return {"msg": data}
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return {"msg": text}
+            return parsed if isinstance(parsed, dict) else {"msg": text}
+        return {}
+
+    def daily_checkin(self, client, daily_id=None):
+        """执行签到，兼容 jmcomic 2.7.9 的 list 响应。
+
+        返回 JmDailyCheckinResp：code=0 成功，code=1 今日已签。
+        其它失败直接抛异常，由上层转成用户提示。
+        """
+        # HTML 客户端没有 req_api/API_DAILY_CHK，直接复用库实现
+        if not hasattr(client, "API_DAILY_CHK") or not hasattr(client, "req_api"):
+            return client.daily_checkin()
+
+        user_id = getattr(client, "_user_id", None)
+        if not user_id:
+            raise RuntimeError("签到需要先登录，请检查插件配置中的账号密码")
+
+        if daily_id is None:
+            daily = client.get_daily(user_id)
+            daily_id = self.daily_payload(daily).get("daily_id")
+        if not daily_id and hasattr(client, "get_or_fetch_daily_id"):
+            daily_id = client.get_or_fetch_daily_id()
+        if not daily_id:
+            raise RuntimeError("签到失败：未能获取 daily_id")
+
+        resp = client.req_api(
+            client.API_DAILY_CHK,
+            get=False,
+            data={"user_id": user_id, "daily_id": daily_id},
+        )
+        payload = resp.json()
+        parsed = self._decode_checkin_data(payload.get("data"), resp.ts)
+        msg = str(parsed.get("msg") or payload.get("errorMsg") or "")
+        status = parsed.get("status")
+
+        already_keywords = (
+            "今天已經簽到過了", "今天已经签到过了", "已簽到", "已签到",
+            "簽到過", "签到过", "已完成", "已打卡",
+        )
+        success_keywords = ("Jcoin", "EXP", "成功", "签到成功", "簽到成功")
+
+        if any(keyword in msg for keyword in already_keywords):
+            code = JmDailyCheckinResp.CODE_ALREADY_CHECKED_IN
+        elif (
+            any(keyword in msg for keyword in success_keywords)
+            or status == "ok"
+            or (isinstance(payload.get("data"), list) and bool(payload.get("data")))
+        ):
+            code = JmDailyCheckinResp.CODE_SUCCESS
+        else:
+            raise RuntimeError(f"签到失败：{msg or payload}")
+
+        return JmDailyCheckinResp(resp.resp, code, msg, parsed)
+
+    # ========== 签到信息解析 ==========
     @staticmethod
     def parse_record_day(value):
         """把签到记录里的日期（"01" / 1 / "2026-10-01"）统一成几号"""

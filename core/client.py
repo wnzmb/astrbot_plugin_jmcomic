@@ -1,5 +1,7 @@
 """jmcomic 客户端管理：登录态缓存与异常翻译。"""
 
+import time
+
 from astrbot.api import logger
 from jmcomic.jm_exception import (
     MissingAlbumPhotoException,
@@ -17,28 +19,18 @@ except ImportError:
 class JmClientManager:
     """单实例缓存已登录客户端，避免每个命令都重新登录。"""
 
+    # 登录态不是永久的：实测 14:58 登录后，15:28 收藏夹接口已返回 401。
+    # 缓存超过 10 分钟就重新 login，仍在有效期内的命令不会重复登录。
+    LOGIN_TTL_SECONDS = 600
+
     def __init__(self, settings):
         self.settings = settings
         self._cached_client = None
+        self._cached_at = 0.0
         # 延迟创建，避免__init__时event_loop未就绪
         self._client_lock = None
 
-    def get_client(self):
-        """创建客户端；若配置了账号密码则同步登录一次，确保会员登录态。
-        带缓存：复用已登录的客户端，避免每次命令都重新登录。
-
-        签到、收藏夹、搜索等接口需要登录态：
-        - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
-          新 client 的 _user_id 恒为 None，daily_checkin/get_daily 会直接报
-          "签到需要传入 user_id 参数，或者先调用 login 方法"。
-        - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
-        这里在每次创建客户端时主动 login 一次，并给出可操作的错误提示。
-        """
-        # 优先返回缓存的已登录客户端
-        if self._cached_client is not None:
-            return self._cached_client
-
-        client = self.settings.option.new_jm_client()
+    def _login(self, client):
         username = self.settings.username
         password = self.settings.password
         if username and password:
@@ -47,14 +39,49 @@ class JmClientManager:
                 logger.info("JMComic 客户端登录成功")
             except Exception as e:
                 raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
+        self._cached_at = time.monotonic()
 
-        # 缓存已登录客户端，后续命令复用
-        self._cached_client = client
-        return client
+    def get_client(self):
+        """创建客户端；若配置了账号密码则登录，登录态过期后自动重登。
+
+        签到、收藏夹、搜索等接口需要登录态：
+        - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
+          新 client 的 _user_id 恒为 None，daily_checkin/get_daily 会直接报
+          "签到需要传入 user_id 参数，或者先调用 login 方法"。
+        - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
+        这里在每次创建客户端时主动 login 一次，并按 TTL 刷新。
+        """
+        # 优先返回仍在有效期内的已登录客户端
+        if (
+            self._cached_client is not None
+            and time.monotonic() - self._cached_at < self.LOGIN_TTL_SECONDS
+        ):
+            return self._cached_client
+
+        if self._cached_client is None:
+            self._cached_client = self.settings.option.new_jm_client()
+        self._login(self._cached_client)
+        return self._cached_client
+
+    def refresh_client(self):
+        """登录态被服务端判定失效时，丢弃缓存并重新登录。"""
+        self._cached_client = None
+        self._cached_at = 0.0
+        return self.get_client()
+
+    @staticmethod
+    def is_auth_error(error):
+        """判断异常是否属于登录态失效（401 / 請先登入會員）。"""
+        text = str(error)
+        return any(
+            keyword in text
+            for keyword in ("401", "請先登入", "请先登入", "未登入", "未登录")
+        )
 
     def invalidate(self):
         """客户端登录态失效时调用，下次请求会重新登录"""
         self._cached_client = None
+        self._cached_at = 0.0
 
     def configured_username(self):
         try:

@@ -61,9 +61,14 @@ class SearchService:
             raise ValueError("关键词不能为空")
         return keyword, qq_page, order_by
 
-    async def render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms"):
-        """通用搜索结果渲染：分页 + 切片 + 输出"""
+    async def render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms", search_keyword=None):
+        """通用搜索结果渲染：分页 + 切片 + 输出
+
+        search_keyword 用于“展示值脱敏、搜索值还原”的场景（例如 jmt juru
+        实际搜索“巨乳”），不传时与原 keyword 相同。
+        """
         self.pagination.clear(event)
+        query = search_keyword or keyword
         PER_QQ_PAGE = self.settings.per_page
         PER_WEB_PAGE = 80
         QQ_PAGES_PER_WEB_PAGE = PER_WEB_PAGE // PER_QQ_PAGE
@@ -82,9 +87,9 @@ class SearchService:
             if self.settings.dual_search:
                 # 搜两次：原词 + 繁体词，合并去重，适配半简半繁标题
                 import zhconv
-                keyword_traditional = zhconv.convert(keyword, 'zh-tw')
+                keyword_traditional = zhconv.convert(query, 'zh-tw')
                 # 如果原词和繁体词相同，只搜一次
-                search_keywords = [keyword] if keyword == keyword_traditional else [keyword, keyword_traditional]
+                search_keywords = [query] if query == keyword_traditional else [query, keyword_traditional]
                 all_items = []
                 for kw in search_keywords:
                     page = await asyncio.to_thread(search_method, kw, web_page, order_by)
@@ -103,7 +108,7 @@ class SearchService:
                         unique_items.append(item)
                 all_items = unique_items
             else:
-                page = await asyncio.to_thread(search_method, keyword, web_page, order_by)
+                page = await asyncio.to_thread(search_method, query, web_page, order_by)
                 total = getattr(page, 'total', None)
                 all_items = list(page.iter_id_title_tag())
             start = offset_in_web_page

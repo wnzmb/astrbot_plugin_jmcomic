@@ -1,6 +1,5 @@
 """收藏夹增删查与 CSV 导出确认。"""
 
-import asyncio
 import re
 import time
 
@@ -135,7 +134,7 @@ class FavoritesHandler:
                 if is_fav:
                     yield self.messaging.plain(event, f"ℹ️ JM{album_id} 已经在收藏夹里了")
                 else:
-                    await asyncio.to_thread(client.add_favorite_album, album_id, folder_id='0')
+                    await self.favorites.add_favorite(client, album_id)
                     self.favorites.clear_client_cache(client)
                     yield self.messaging.plain(event, f"✅ 已收藏 JM{album_id}")
                 try:
@@ -158,7 +157,7 @@ class FavoritesHandler:
                 if not is_fav:
                     yield self.messaging.plain(event, f"ℹ️ JM{album_id} 本来就不在收藏夹里，无需移除")
                 else:
-                    await asyncio.to_thread(client.delete_favorite_album, album_id, folder_id='0')
+                    await self.favorites.delete_favorite(client, album_id)
                     self.favorites.clear_client_cache(client)
                     yield self.messaging.plain(event, f"✅ 已移除收藏 JM{album_id}")
                 try:
@@ -180,7 +179,7 @@ class FavoritesHandler:
 
             # /jmfav — 列出收藏夹文件夹
             yield self.messaging.plain(event, "⭐ 获取我的收藏夹列表...")
-            page = await asyncio.to_thread(client.favorite_folder, 1)
+            page = await self.favorites.fetch_folder(client, 1)
 
             # 列出所有收藏夹文件夹
             folders = list(page.iter_folder_id_name())

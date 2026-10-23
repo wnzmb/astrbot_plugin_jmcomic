@@ -30,10 +30,19 @@ class PageSessionService:
     def remember(self, event, next_command, page, total_pages=None):
         if self.settings.page_turn_timeout <= 0 or not next_command:
             return
+        key = self.page_session_key(event)
         if total_pages is not None and page >= int(total_pages):
-            self.state.page_sessions.pop(self.page_session_key(event), None)
+            # 不直接删会话，否则用户再发 /jmnext 只能看到“没有列表/已超时”，
+            # 无法区分“已经是最后一页”。保留一个仅用于提示的会话。
+            self.state.page_sessions[key] = {
+                "next_command": "",
+                "page": int(page),
+                "total_pages": int(total_pages),
+                "expires_at": time.monotonic() + self.settings.page_turn_timeout,
+                "at_last_page": True,
+            }
             return
-        self.state.page_sessions[self.page_session_key(event)] = {
+        self.state.page_sessions[key] = {
             "next_command": next_command,
             "page": int(page),
             "total_pages": int(total_pages) if total_pages is not None else None,

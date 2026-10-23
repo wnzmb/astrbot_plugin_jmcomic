@@ -64,7 +64,7 @@ def build_help_text(settings, quota):
         "━━━━━━━━━━━━━━━\n"
         "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
         "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
-        "💾 下载缓存：JM{{漫画id}}/P{{章节id}}_第N话/图片，标题存入 metadata.json，默认保留 {cache_days} 天\n"
+        "💾 下载缓存：JM{{漫画id}}/P{{章节id}}_第N话/图片，标题存入 metadata.json，启动时清理 {cache_days} 天未访问的缓存目录（0=永久保留）\n"
         "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性，每册都加漫画信息页\n"
         "📄 PDF：每 {pdf_page_limit} 页一册（整话优先，单话超限按页切分）\n"
         "🗜️ ZIP：最多 {zip_group_size} 话/册，{zip_page_text}\n"

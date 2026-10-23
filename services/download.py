@@ -13,21 +13,43 @@ from ..core.downloader import ProgressDownloader
 
 
 class DownloadService:
-    def __init__(self, settings, cache, messaging):
+    def __init__(self, settings, client, cache, messaging):
         self.settings = settings
+        self.client = client
         self.cache = cache
         self.messaging = messaging
 
     # ========== 整本下载 ==========
-    async def download_album_progress(self, event, album_id, holder, chapters=None):
+    def album_cached_pages(self, folder, chapters):
+        total = 0
+        for photo in chapters or []:
+            chapter = self.cache.chapter_dir(photo, folder)
+            if chapter is not None:
+                total += len(self.cache.chapter_images(chapter))
+        return total
+
+    def album_cache_ready(self, folder, chapters, expected_pages=0):
+        if folder is None or not self.cache.album_cache_complete(folder, chapters):
+            return False
+        try:
+            expected = int(expected_pages or 0)
+        except (TypeError, ValueError):
+            expected = 0
+        if expected > 0 and chapters:
+            return self.album_cached_pages(folder, chapters) >= expected
+        return True
+
+    async def download_album_progress(self, event, album_id, holder, chapters=None,
+                                      expected_pages=0):
         """下载整本，结果写入 holder['dir'] / holder['duration']。
 
         - 只有所有章节都已有图片时才跳过下载，避免半成品缓存产出残缺 PDF；
+        - expected_pages 用 album.page_count 对账，识别“每章都有目录但总页数不足”的连续缺页；
         - 图片/CDN 瞬时失败时自动重试，已下载图片会复用缓存；
         - 重试后仍有失败时，允许发送已完成章节，并由上层报告部分失败。
         """
         folder = self.cache.find_album_dir(album_id)
-        if folder is not None and self.cache.album_cache_complete(folder, chapters):
+        if self.album_cache_ready(folder, chapters, expected_pages):
             holder["dir"] = folder
             holder["duration"] = 0.0
             return
@@ -76,7 +98,7 @@ class DownloadService:
             holder["duration"] = float(getattr(result, "duration", 0) or 0)
             if folder is None:
                 yield self.messaging.plain(event, "⚠️ 下载完成但找不到漫画目录")
-            elif chapters and not self.cache.album_cache_complete(folder, chapters):
+            elif chapters and not self.album_cache_ready(folder, chapters, expected_pages):
                 holder["partial"] = True
                 yield self.messaging.plain(event,
                     "⚠️ 下载结束但仍有话缺失，将先发送已完成话；"
@@ -85,10 +107,45 @@ class DownloadService:
             return
 
     # ========== 单章下载 ==========
+    async def is_photo_complete(self, photo, folder):
+        """章节缓存是否完整。
+
+        album 列表里的 photo 通常没有 page_arr，只有拉过详情才知道总页数；
+        因此缓存目录已存在时补一次详情请求，避免把 5/38 页的半成品当成完整缓存。
+        """
+        if folder is None:
+            return False
+        actual = len(self.cache.chapter_images(folder))
+        if actual <= 0:
+            return False
+        expected = len(getattr(photo, "page_arr", None) or [])
+        if expected <= 0:
+            try:
+                detail = await asyncio.to_thread(
+                    self.client.get_client().get_photo_detail, photo.photo_id
+                )
+                page_arr = getattr(detail, "page_arr", None)
+                expected = len(page_arr or [])
+                if expected:
+                    photo.page_arr = page_arr
+                if not getattr(photo, "name", "") and getattr(detail, "name", ""):
+                    photo.name = detail.name
+            except Exception as e:
+                logger.warning(f"校验章节页数失败，按已有缓存继续: {e}")
+                expected = 0
+        if expected <= 0:
+            try:
+                expected = int(self.cache.read_metadata(folder).get("page_count") or 0)
+            except (TypeError, ValueError):
+                expected = 0
+        if expected <= 0:
+            return True
+        return self.cache.chapter_complete(photo, folder=folder)
+
     async def ensure_photo_downloaded(self, photo, album_dir=None):
-        """确保单章已下载，返回 (目录, 耗时)"""
+        """确保单章已下载且页数完整，返回 (目录, 耗时)"""
         folder = self.cache.chapter_dir(photo, album_dir)
-        if folder is not None:
+        if folder is not None and await self.is_photo_complete(photo, folder):
             return folder, 0.0
 
         try:
@@ -104,6 +161,10 @@ class DownloadService:
         detail = getattr(result, "detail", photo)
         if getattr(detail, "from_album", None) is None and getattr(photo, "from_album", None) is not None:
             detail.from_album = photo.from_album
+        # 把服务端总页数带回 album 列表对象，供 metadata 记录“应有页数”，
+        # 后续判断半成品缓存时不需要再请求详情。
+        if getattr(detail, "page_arr", None) and not getattr(photo, "page_arr", None):
+            photo.page_arr = detail.page_arr
         if not getattr(photo, "name", "") and getattr(detail, "name", ""):
             photo.name = detail.name
         folder = self.cache.chapter_dir(detail, album_dir) or self.cache.chapter_dir(photo, album_dir)

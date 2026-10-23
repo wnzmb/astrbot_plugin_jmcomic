@@ -38,14 +38,28 @@ class AccountHandler:
 
             # 先获取签到信息
             yield self.messaging.plain(event, "📅 正在获取签到信息...")
-            daily = await asyncio.to_thread(client.get_daily)
+            try:
+                daily = await asyncio.to_thread(client.get_daily)
+            except Exception as e:
+                if not self.client.is_auth_error(e):
+                    raise
+                client = self.client.refresh_client()
+                daily = await asyncio.to_thread(client.get_daily)
             info = self.checkin.parse_daily_info(daily)
+            daily_id = self.checkin.daily_payload(daily).get("daily_id")
 
             # 执行签到
             yield self.messaging.plain(event, "✅ 正在签到...")
             signed_ok = False
             try:
-                resp = await asyncio.to_thread(client.daily_checkin)
+                try:
+                    resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
+                except Exception as e:
+                    # 登录态刚好过期时刷新一次再签
+                    if not self.client.is_auth_error(e):
+                        raise
+                    client = self.client.refresh_client()
+                    resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
                 if resp.code == 0:
                     result_msg = f"🎉 签到成功！\n{resp.msg}"
                     signed_ok = True
@@ -55,7 +69,7 @@ class AccountHandler:
                 else:
                     result_msg = f"签到结果：{resp.msg}"
             except Exception as checkin_err:
-                # jmcomic 2.7.9 的关键词匹配只支持繁体，API返回简体"今天已经签到过了"时会抛异常
+                # 兼容旧版 jmcomic 的“已签到”异常文案
                 err_str = str(checkin_err)
                 if any(kw in err_str for kw in ('已签', '签到过', '已经签', '今日已')):
                     result_msg = f"📌 今日已签到\n{err_str.replace('签到失败：', '')}"

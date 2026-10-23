@@ -166,7 +166,8 @@ class DownloadRunner:
                 holder = {}
                 try:
                     async for message in self.download.download_album_progress(
-                        event, target_id, holder, chapters=chapters
+                        event, target_id, holder, chapters=chapters,
+                        expected_pages=getattr(album, "page_count", 0),
                     ):
                         sent_messages += 1
                         yield message
@@ -203,7 +204,8 @@ class DownloadRunner:
                 done_pages = 0
                 for original_index, photo in download_items:
                     photo_key = str(getattr(photo, "photo_id", original_index))
-                    if self.cache.chapter_dir(photo, album_dir) is not None:
+                    folder = self.cache.chapter_dir(photo, album_dir)
+                    if folder is not None and await self.download.is_photo_complete(photo, folder):
                         done_pages += selected_pages.get(photo_key, 0)
                         self.progress.update(user_id, done=done_pages)
                         continue

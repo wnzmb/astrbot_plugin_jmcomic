@@ -162,9 +162,11 @@ class SearchHandler:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmt <标签名> [页码] [排序]")
             return
         client = self.client.get_client()
+        search_keyword = self.text.restore_tag(keyword)
 
         async for result in self.search.render_search_page(
-            event, client, client.search_tag, keyword, qq_page, order_by, "标签搜索", "jmt"
+            event, client, client.search_tag, keyword, qq_page, order_by,
+            "标签搜索", "jmt", search_keyword=search_keyword,
         ):
             yield result
 

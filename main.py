@@ -76,7 +76,7 @@ class JmComicPlugin(Star):
         self.search = SearchService(
             self.settings, self.client, self.text, self.messaging, self.pagination
         )
-        self.download = DownloadService(self.settings, self.cache, self.messaging)
+        self.download = DownloadService(self.settings, self.client, self.cache, self.messaging)
         self.runner = DownloadRunner(
             self.settings, self.client, self.cache, self.catalog, self.messaging,
             self.quota, self.history, self.progress, self.selection,

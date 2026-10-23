@@ -79,15 +79,19 @@ class CatalogService:
         return max(0, end - start + 1)
 
     def format_chapter_line(self, photo, index, limit=50):
-        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。"""
+        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。
+
+        album 列表接口不返回 page_arr，页数未知时不再强行写“页数未知”，
+        避免整页列表每行都出现同样的冗余提示。
+        """
         position = self.photo_position(photo, index)
         title = self.text.safe_text(getattr(photo, "name", ""), self.settings.convert_title)
         title = title[:limit] if title else ""
         pages = self.photo_page_count(photo)
         if title:
-            suffix = f"{title}（{pages}页）" if pages else f"{title}（页数未知）"
+            suffix = f"{title}（{pages}页）" if pages else title
         else:
-            suffix = f"（无标题，{pages}页）" if pages else "（无标题，页数未知）"
+            suffix = f"（无标题，{pages}页）" if pages else "（无标题）"
         return f"第{position}话 [JM{getattr(photo, 'photo_id', '')}] {suffix}"
 
     # ========== metadata 落盘 ==========

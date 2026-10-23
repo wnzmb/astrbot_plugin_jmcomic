@@ -39,6 +39,10 @@ class NavigationHandler:
                 "/jmc、/jmrank 或搜索命令。",
             )
             return
+        if session.get("at_last_page"):
+            self.pagination.clear(event)
+            yield self.messaging.plain(event, "已经是最后一页了")
+            return
         self.pagination.clear(event)
         async for message in self.follow(event, session):
             yield message
@@ -49,6 +53,10 @@ class NavigationHandler:
             return
         session = self.pagination.get(event)
         if session is None:
+            return
+        if session.get("at_last_page"):
+            self.pagination.clear(event)
+            yield self.messaging.plain(event, "已经是最后一页了")
             return
         self.pagination.clear(event)
         async for message in self.follow(event, session):

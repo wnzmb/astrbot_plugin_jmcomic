@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 from astrbot.api import logger
@@ -127,7 +128,7 @@ class CacheService:
         if not chapters:
             return self.album_dir_has_images(folder)
         for photo in chapters:
-            if self.chapter_dir(photo, folder) is None:
+            if not self.chapter_complete(photo, album_dir=folder):
                 return False
         return True
 
@@ -192,13 +193,51 @@ class CacheService:
                     for sub in subs:
                         if sub.name == name and self.album_dir_has_images(sub):
                             return sub
-                    # 3) 最后才允许包含匹配（旧缓存标题可能带前后缀）
-                    for sub in subs:
-                        if name in sub.name and self.album_dir_has_images(sub):
-                            return sub
+                    # 3) 最后才允许包含匹配（旧缓存标题可能带前后缀）。
+                    #    新版 P{id}_第N话 目录不参与，否则纯数字标题 "37"
+                    #    会命中 P1172871_第37话，把第38话误判成已缓存。
+                    if not name.isdigit() and len(name) >= 4:
+                        for sub in subs:
+                            if re.match(r"^P\d+_第\d+话$", sub.name):
+                                continue
+                            if name in sub.name and self.album_dir_has_images(sub):
+                                return sub
             except Exception:
                 pass
         return None
+
+    def chapter_complete(self, photo, folder=None, album_dir=None):
+        """章节目录是否存在且页数足够；页数未知时用图片编号连续性兜底。"""
+        folder = folder or self.chapter_dir(photo, album_dir)
+        if folder is None:
+            return False
+        images = self.chapter_images(folder)
+        actual = len(images)
+        if actual <= 0:
+            return False
+        # 图片名是 00001.jpg 这类序号时，缺页会留下编号空洞。
+        # 这能识别“metadata.page_count 被上一次残缺下载写成实际页数”的旧缓存。
+        numbers = []
+        for image in images:
+            if image.stem.isdigit():
+                numbers.append(int(image.stem))
+        if numbers:
+            if min(numbers) not in (0, 1):
+                return False
+            if max(numbers) - min(numbers) + 1 != len(numbers):
+                return False
+        expected = 0
+        page_arr = getattr(photo, "page_arr", None)
+        try:
+            expected = len(page_arr or [])
+        except Exception:
+            expected = 0
+        if expected <= 0:
+            try:
+                expected = int(self.read_metadata(folder).get("page_count") or 0)
+            except (TypeError, ValueError):
+                expected = 0
+        return actual >= expected if expected > 0 else True
 
     @staticmethod
     def chapter_images(chapter_dir: Path):

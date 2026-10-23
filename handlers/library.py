@@ -190,10 +190,9 @@ class LibraryHandler:
                 nav.append(f"下一页：/jmhis -all {page_num + 1}")
             if nav:
                 reply += "\n\n" + "\n".join(nav)
-            if page_num < total_pages:
-                self.pagination.remember(
-                    event, f"/jmhis -all {page_num + 1}", page_num, total_pages
-                )
+            self.pagination.remember(
+                event, f"/jmhis -all {page_num + 1}", page_num, total_pages
+            )
             yield self.messaging.plain(event, reply)
             return
 
@@ -239,10 +238,9 @@ class LibraryHandler:
         if page_num > 1:
             reply += f"\n上一页：/jmhis {page_num - 1}"
         reply += "\n\n/jmhis clear 清空历史"
-        if page_num < total_pages:
-            self.pagination.remember(
-                event, f"/jmhis {page_num + 1}", page_num, total_pages
-            )
+        self.pagination.remember(
+            event, f"/jmhis {page_num + 1}", page_num, total_pages
+        )
         yield self.messaging.plain(event, reply)
 
     async def comments(self, event: AstrMessageEvent):
@@ -404,12 +402,12 @@ class LibraryHandler:
             # 下一页提示
             if page_count is None or page_num < page_count:
                 reply += f"\n\n下一页：/jmc {album_id} {page_num + 1}"
-                self.pagination.remember(
-                    event,
-                    f"/jmc {album_id} {page_num + 1}",
-                    page_num,
-                    page_count,
-                )
+            self.pagination.remember(
+                event,
+                f"/jmc {album_id} {page_num + 1}",
+                page_num,
+                page_count,
+            )
 
             yield self.messaging.plain(event, reply[:3500])
 

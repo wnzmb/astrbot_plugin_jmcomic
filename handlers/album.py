@@ -335,13 +335,13 @@ class AlbumHandler:
                 )
                 return
 
-            if page_num < total_pages:
-                self.pagination.remember(
-                    event,
-                    f"/jmlist {album_id} {page_num + 1}",
-                    page_num,
-                    total_pages,
-                )
+            # 最后一页也保留会话，便于 /jmnext 区分“没有列表”和“已是最后一页”
+            self.pagination.remember(
+                event,
+                f"/jmlist {album_id} {page_num + 1}",
+                page_num,
+                total_pages,
+            )
 
         except Exception as e:
             yield self.messaging.plain(event, self.client.handle_exception(e, "获取话列表"))
