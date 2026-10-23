@@ -23,11 +23,7 @@ from jmcomic.jm_exception import (
     RequestRetryAllFailException,
     PartialDownloadFailedException,
 )
-# DownloadCancelledException 在 jmcomic 2.7.6+ 才有，低版本兼容处理
-try:
-    from jmcomic.jm_exception import DownloadCancelledException
-except ImportError:
-    DownloadCancelledException = None
+from .core.client import JmClientManager
 from .core.config import PluginSettings
 from .core.state import PluginState
 from .core.downloader import ProgressDownloader
@@ -105,8 +101,7 @@ class JmComicPlugin(Star):
         self.state = PluginState()
 
         # 登录态客户端缓存：避免每次命令都重新登录
-        self._cached_client = None
-        self._client_lock = None  # 延迟创建，避免__init__时event_loop未就绪
+        self.client = JmClientManager(self.settings)
 
         logger.info(
             f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
@@ -247,56 +242,6 @@ class JmComicPlugin(Star):
             f"最近1小时 {self._quota_display(q['hour_count'], self.hourly_file_limit)}"
         )
 
-    def _handle_jm_exception(self, e: Exception, action: str = "操作") -> str:
-        """把 jmcomic 异常转换为用户友好的提示"""
-        if isinstance(e, MissingAlbumPhotoException):
-            return f"❌ 查无此本/话，请检查 ID 是否正确"
-        elif isinstance(e, RequestRetryAllFailException):
-            return (
-                "❌ 网络请求全部失败，可尝试在插件配置中更换域名；"
-                "如已启用代理，请检查 proxy_url 是否可连通\n"
-                f"{e}"
-            )
-        elif isinstance(e, PartialDownloadFailedException):
-            return f"⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
-        elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
-            return f"⏹️ 下载已取消"
-        else:
-            logger.error(f"{action}失败: {e}", exc_info=True)
-            return f"❌ {action}失败：{e}"
-
-    def _new_logged_client(self):
-        """创建客户端；若配置了账号密码则同步登录一次，确保会员登录态。
-        带缓存：复用已登录的客户端，避免每次命令都重新登录。
-
-        签到、收藏夹、搜索等接口需要登录态：
-        - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
-          新 client 的 _user_id 恒为 None，daily_checkin/get_daily 会直接报
-          "签到需要传入 user_id 参数，或者先调用 login 方法"。
-        - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
-        这里在每次创建客户端时主动 login 一次，并给出可操作的错误提示。
-        """
-        # 优先返回缓存的已登录客户端
-        if self._cached_client is not None:
-            return self._cached_client
-
-        client = self.option.new_jm_client()
-        username = self.config.get("username", "")
-        password = self.config.get("password", "")
-        if username and password:
-            try:
-                client.login(username, password)
-                logger.info("JMComic 客户端登录成功")
-            except Exception as e:
-                raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
-
-        # 缓存已登录客户端，后续命令复用
-        self._cached_client = client
-        return client
-
-    def _invalidate_client(self):
-        """客户端登录态失效时调用，下次请求会重新登录"""
-        self._cached_client = None
 
     def _to_simplified(self, text):
         """繁体转简体"""
@@ -2078,9 +2023,9 @@ class JmComicPlugin(Star):
         fmt_label = "PDF" if output_format == "pdf" else "ZIP"
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "登录"))
+            yield self._plain(event, self.client.handle_exception(e, "登录"))
             return
 
         success = 0
@@ -2108,7 +2053,7 @@ class JmComicPlugin(Star):
             except Exception as e:
                 failed.append(raw)
                 yield self._plain(event,
-                    f"❌ {target_label} 识别失败：{self._handle_jm_exception(e, '识别')}"
+                    f"❌ {target_label} 识别失败：{self.client.handle_exception(e, '识别')}"
                 )
                 continue
 
@@ -2187,7 +2132,7 @@ class JmComicPlugin(Star):
                 except Exception as e:
                     failed.append(raw)
                     yield self._plain(event,
-                        f"❌ {target_label} 下载失败：{self._handle_jm_exception(e, '下载')}"
+                        f"❌ {target_label} 下载失败：{self.client.handle_exception(e, '下载')}"
                     )
                     continue
                 album_dir = holder.get("dir")
@@ -2613,7 +2558,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "搜索"))
+            yield self._plain(event, self.client.handle_exception(e, "搜索"))
 
     # ========== 工具：从消息里提取数字ID ==========
     def _extract_id(self, message_str: str) -> str:
@@ -2685,7 +2630,7 @@ class JmComicPlugin(Star):
         yield self._plain(event, f"🔍 查询 JM{album_id} ...{option_suffix}")
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
             if self._looks_like_chapter_album(album):
@@ -2815,7 +2760,7 @@ class JmComicPlugin(Star):
                     cover_pdf.unlink(missing_ok=True)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "查询"))
+            yield self._plain(event, self.client.handle_exception(e, "查询"))
 
     # ========== /jmlist 话列表 ==========
     @filter.command("jmlist")
@@ -2856,7 +2801,7 @@ class JmComicPlugin(Star):
         yield self._plain(event, f"📚 获取 JM{album_id} 的话列表...")
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
             if self._looks_like_chapter_album(album):
@@ -2949,7 +2894,7 @@ class JmComicPlugin(Star):
                 )
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取话列表"))
+            yield self._plain(event, self.client.handle_exception(e, "获取话列表"))
 
     # ========== /jm 下载 PDF（/jmphoto 为兼容别名） ==========
     @filter.command("jm", alias={"jmphoto"})
@@ -3200,7 +3145,7 @@ class JmComicPlugin(Star):
 
         try:
             import random
-            client = self._new_logged_client()
+            client = self.client.get_client()
 
             if tag_name:
                 # 全站搜索，关键词可以是标题/标签/作者
@@ -3257,7 +3202,7 @@ class JmComicPlugin(Star):
             )
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "随机抽漫"))
+            yield self._plain(event, self.client.handle_exception(e, "随机抽漫"))
 
     # ========== /jms 全站搜索 ==========
     @filter.command("jms")
@@ -3287,7 +3232,7 @@ class JmComicPlugin(Star):
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jms <关键词> [页码] [排序]")
             return
-        client = self._new_logged_client()
+        client = self.client.get_client()
 
         async for result in self._render_search_page(
             event, client, client.search_site, keyword, qq_page, order_by, "全站搜索", "jms"
@@ -3311,7 +3256,7 @@ class JmComicPlugin(Star):
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jma <作者名> [页码] [排序]")
             return
-        client = self._new_logged_client()
+        client = self.client.get_client()
 
         async for result in self._render_search_page(
             event, client, client.search_author, keyword, qq_page, order_by, "作者搜索", "jma"
@@ -3335,7 +3280,7 @@ class JmComicPlugin(Star):
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmt <标签名> [页码] [排序]")
             return
-        client = self._new_logged_client()
+        client = self.client.get_client()
 
         async for result in self._render_search_page(
             event, client, client.search_tag, keyword, qq_page, order_by, "标签搜索", "jmt"
@@ -3359,7 +3304,7 @@ class JmComicPlugin(Star):
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmr <角色名> [页码] [排序]")
             return
-        client = self._new_logged_client()
+        client = self.client.get_client()
 
         async for result in self._render_search_page(
             event, client, client.search_actor, keyword, qq_page, order_by, "角色搜索", "jmr"
@@ -3383,7 +3328,7 @@ class JmComicPlugin(Star):
         except ValueError as e:
             yield self._plain(event, f"⚠️ {e}\n用法：/jmw <原作名> [页码] [排序]")
             return
-        client = self._new_logged_client()
+        client = self.client.get_client()
 
         async for result in self._render_search_page(
             event, client, client.search_work, keyword, qq_page, order_by, "原作搜索", "jmw"
@@ -3585,7 +3530,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, self._owner_required_text())
             return
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
 
             # jmcomic 2.7.5 及以下版本不支持签到接口
             jm_version = getattr(jmcomic, '__version__', '未知')
@@ -3658,7 +3603,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "签到"))
+            yield self._plain(event, self.client.handle_exception(e, "签到"))
 
     # ========== /jmme 用户面板 ==========
     @filter.command("jmme")
@@ -3671,7 +3616,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, self._owner_required_text())
             return
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
 
             # 从配置读取登录用户名
             username = ""
@@ -3734,7 +3679,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取用户信息"))
+            yield self._plain(event, self.client.handle_exception(e, "获取用户信息"))
 
     # ========== /jmrank 排行榜 ==========
     @filter.command("jmrank")
@@ -3778,7 +3723,7 @@ class JmComicPlugin(Star):
         yield self._plain(event, f"🏆 获取{rank_name} 第{qq_page}页...")
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
             method = getattr(client, method_name)
 
             PER_QQ_PAGE = self.per_page
@@ -3817,7 +3762,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取排行榜"))
+            yield self._plain(event, self.client.handle_exception(e, "获取排行榜"))
 
     # ========== /jmhis 下载历史 ==========
     @filter.command("jmhis")
@@ -4004,7 +3949,7 @@ class JmComicPlugin(Star):
         yield self._plain(event, f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
 
             # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
             album = await asyncio.to_thread(client.get_album_detail, album_id)
@@ -4136,7 +4081,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply[:3500])
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取评论"))
+            yield self._plain(event, self.client.handle_exception(e, "获取评论"))
 
     # ========== /jmwhoami 查看自己的ID ==========
     @filter.command("jmwhoami")
@@ -4167,7 +4112,7 @@ class JmComicPlugin(Star):
             return
         yield self._plain(event, "🌐 正在获取可用域名...")
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
             client_label = "API" if self.client_type == "api" else "HTML"
 
             api_domains = []
@@ -4231,7 +4176,7 @@ class JmComicPlugin(Star):
 
             yield self._plain(event, reply)
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "获取域名"))
+            yield self._plain(event, self.client.handle_exception(e, "获取域名"))
 
     # ========== /jmupdate 查看更新日志 ==========
     @filter.command("jmupdate")
@@ -4290,14 +4235,6 @@ class JmComicPlugin(Star):
         reply += "\n\n/jmv <id> 查详情，/jm <id> 下载"
         return reply
 
-    def _configured_username(self):
-        try:
-            for plugin in self.option.plugins.after_init:
-                if plugin.get('plugin') == 'login':
-                    return plugin.get('kwargs', {}).get('username', '') or ''
-        except Exception:
-            pass
-        return ''
 
     @staticmethod
     def _collect_favorite_rows(client, folder_id):
@@ -4329,8 +4266,8 @@ class JmComicPlugin(Star):
     async def _export_favorites(self, event: AstrMessageEvent, folder_id: str):
         """导出收藏夹为 CSV 文件（仅号主，无加密）。"""
         try:
-            client = self._new_logged_client()
-            if not self._configured_username():
+            client = self.client.get_client()
+            if not self.client.configured_username():
                 yield self._plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
                 return
 
@@ -4369,7 +4306,7 @@ class JmComicPlugin(Star):
             await asyncio.sleep(self.send_interval)
             yield self._plain(event, f"✅ 已导出收藏夹「{folder_name}」，共 {len(rows)} 本")
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "导出收藏夹"))
+            yield self._plain(event, self.client.handle_exception(e, "导出收藏夹"))
 
     # ========== /jmsub 订阅更新 ==========
     def _load_subscriptions(self):
@@ -4619,7 +4556,7 @@ class JmComicPlugin(Star):
                 f"当前 {len(snapshot['photo_ids'])} 话。{hint}"
             )
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "订阅"))
+            yield self._plain(event, self.client.handle_exception(e, "订阅"))
 
     @filter.command("jmfav")
     async def jm_favorite(self, event: AstrMessageEvent):
@@ -4711,7 +4648,7 @@ class JmComicPlugin(Star):
                 return
 
         try:
-            client = self._new_logged_client()
+            client = self.client.get_client()
 
             # 从配置里读登录的用户名
             username = ""
@@ -4805,7 +4742,7 @@ class JmComicPlugin(Star):
             yield self._plain(event, reply)
 
         except Exception as e:
-            yield self._plain(event, self._handle_jm_exception(e, "收藏夹操作"))
+            yield self._plain(event, self.client.handle_exception(e, "收藏夹操作"))
 
     async def initialize(self):
         """插件激活时启动订阅更新检查。"""
