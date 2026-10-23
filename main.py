@@ -126,6 +126,20 @@ class ProgressDownloader(JmAsyncDownloader):
                 state['done'] = state['total']
 
 
+class PageEventProxy:
+    """给 /jmnext 复用一个新命令字符串，其余事件能力仍委托原事件。"""
+
+    def __init__(self, event, message_str):
+        object.__setattr__(self, "_event", event)
+        object.__setattr__(self, "message_str", message_str)
+
+    def get_message_str(self):
+        return self.message_str
+
+    def __getattr__(self, name):
+        return getattr(self._event, name)
+
+
 class PageUnit(NamedTuple):
     """一个待打包的页段：章节内第 start~end 页（1 起，含两端）"""
 
@@ -210,8 +224,8 @@ class JmComicPlugin(Star):
         # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
         configured_zip_pages = int(self.config.get("zip_page_limit", 300) or 0)
         self.zip_page_limit = min(2000, max(0, configured_zip_pages))
-        # 整本下载进度：每 N% 推送一次，0 表示关闭；60 秒心跳为内部常量
-        self.progress_step = min(100, max(0, int(self.config.get("progress_step", 10) or 0)))
+        # 翻页会话有效期：发送“下一页/下页”或 /jmnext 时使用
+        self.page_turn_timeout = max(0, int(self.config.get("page_turn_timeout", 60) or 0))
         # 代理：use_proxy=false 时显式传空 dict，避免系统代理环境变量干扰
         proxy_url = str(self.config.get("proxy_url", "") or "").strip()
         self.use_proxy = bool(self.config.get("use_proxy", False)) and bool(proxy_url)
@@ -222,6 +236,10 @@ class JmComicPlugin(Star):
         self._id_type_cache = {}
         # 当前用户正在执行的下载任务，供 /jmstop 取消
         self._download_tasks: dict[str, set] = {}
+        # 当前用户下载进度，供 /jmnow 查看
+        self._active_downloads: dict[str, dict] = {}
+        # 最近一次分页结果，供 /jmnext 和“下一页/下页”使用
+        self._page_sessions: dict[tuple, dict] = {}
         # 收藏夹导出二次确认：key=(发送者, umo, 操作) -> 首次输入时间
         self._pending_exports: dict[tuple, float] = {}
         # 订阅更新后台检查任务
@@ -680,12 +698,50 @@ class JmComicPlugin(Star):
                 return item.get("title_display") or item.get("title") or f"第{index}话"
         return f"第{index}话"
 
+    @staticmethod
+    def _photo_page_count(photo):
+        """读取章节页数；API 通常提供 page_arr，缺失时回退 page_count/total。"""
+        try:
+            page_arr = getattr(photo, "page_arr", None)
+            if page_arr is not None:
+                count = len(page_arr)
+                if count > 0:
+                    return count
+        except Exception:
+            pass
+        for attr in ("page_count", "total"):
+            try:
+                value = int(getattr(photo, attr, 0) or 0)
+                if value > 0:
+                    return value
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _photo_range_pages(self, photo, page_range=None):
+        total = self._photo_page_count(photo)
+        if total <= 0:
+            return 0
+        if not page_range:
+            return total
+        start, end = int(page_range[0]), page_range[1]
+        start = max(1, min(start, total))
+        end = total if end is None else min(int(end), total)
+        if end < start:
+            start, end = end, start
+        return max(0, end - start + 1)
+
     def _format_chapter_line(self, photo, index, limit=50):
-        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题。"""
+        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。"""
         position = self._photo_position(photo, index)
         title = self._safe_text(getattr(photo, "name", ""), self.convert_title)
-        title = title[:limit] if title else "（无标题）"
-        return f"第{position}话 [JM{getattr(photo, 'photo_id', '')}] {title}"
+        title = title[:limit] if title else ""
+        pages = self._photo_page_count(photo)
+        if title:
+            suffix = f"{title}（{pages}页）" if pages else f"{title}（页数未知）"
+        else:
+            suffix = f"（无标题，{pages}页）" if pages else "（无标题，页数未知）"
+        return f"第{position}话 [JM{getattr(photo, 'photo_id', '')}] {suffix}"
 
     def _save_target_metadata(self, album, album_id, chapters, album_dir,
                               selected_photos=None):
@@ -1134,6 +1190,106 @@ class JmComicPlugin(Star):
 
     def _plain(self, event, text):
         return event.plain_result(self._output_text(event, text))
+
+    # ========== 下载进度 / 分页会话 ==========
+    def _set_active_download(self, user_id, task, target=""):
+        self._active_downloads[str(user_id)] = {
+            "task": task,
+            "album_id": str(target or ""),
+            "total": 0,
+            "done": 0,
+            "stage": "downloading",
+            "updated": time.monotonic(),
+        }
+
+    def _update_active_download(self, user_id, **kwargs):
+        state = self._active_downloads.get(str(user_id))
+        if not state:
+            return
+        state.update(kwargs)
+        state["updated"] = time.monotonic()
+
+    def _clear_active_download(self, user_id, task=None):
+        user_id = str(user_id)
+        state = self._active_downloads.get(user_id)
+        if state and (task is None or state.get("task") is task):
+            self._active_downloads.pop(user_id, None)
+
+    def _active_download(self, user_id):
+        state = self._active_downloads.get(str(user_id))
+        if not state:
+            return None
+        task = state.get("task")
+        if task is not None:
+            try:
+                if task.done():
+                    self._active_downloads.pop(str(user_id), None)
+                    return None
+            except Exception:
+                pass
+        return state
+
+    @staticmethod
+    def _page_session_key(event):
+        umo = getattr(event, "unified_msg_origin", "") or ""
+        return (str(umo), str(event.get_sender_id()))
+
+    def _remember_page(self, event, next_command, page, total_pages=None):
+        if self.page_turn_timeout <= 0 or not next_command:
+            return
+        if total_pages is not None and page >= int(total_pages):
+            self._page_sessions.pop(self._page_session_key(event), None)
+            return
+        self._page_sessions[self._page_session_key(event)] = {
+            "next_command": next_command,
+            "page": int(page),
+            "total_pages": int(total_pages) if total_pages is not None else None,
+            "expires_at": time.monotonic() + self.page_turn_timeout,
+        }
+
+    def _page_session(self, event):
+        key = self._page_session_key(event)
+        session = self._page_sessions.get(key)
+        if not session:
+            return None
+        if time.monotonic() > session.get("expires_at", 0):
+            self._page_sessions.pop(key, None)
+            return None
+        return session
+
+    def _clear_page_session(self, event):
+        self._page_sessions.pop(self._page_session_key(event), None)
+
+    @staticmethod
+    def _is_qq_official(event):
+        try:
+            return event.get_platform_name() == "qq_official"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _message_budget(event):
+        """QQ 官方单聊 4 条、群聊 5 条；其他平台不限制。"""
+        if not JmComicPlugin._is_qq_official(event):
+            return None
+        try:
+            return 5 if str(event.get_group_id() or "") else 4
+        except Exception:
+            return 4
+
+    @staticmethod
+    def _page_handler_name(command):
+        return {
+            "jmlist": "jm_chapter_list",
+            "jmhis": "jm_history",
+            "jmc": "jm_comments",
+            "jmrank": "jm_ranking",
+            "jms": "jm_search",
+            "jma": "jm_search_author",
+            "jmt": "jm_search_tag",
+            "jmr": "jm_search_actor",
+            "jmw": "jm_search_work",
+        }.get(command)
 
     def _chain(self, event, chain):
         """处理 chain 中的文本组件，文件/图片组件保持原样"""
@@ -2033,28 +2189,8 @@ class JmComicPlugin(Star):
             arc_dir += f"_p{unit.start:03d}-{unit.end:03d}"
         return arc_dir
 
-    @staticmethod
-    def _progress_bar(pct, width=10):
-        pct = max(0, min(100, int(pct)))
-        filled = int(round(pct * width / 100))
-        return "█" * filled + "░" * (width - filled)
-
-    def _progress_message(self, prog, pct):
-        total = max(0, int(prog.get("total") or 0))
-        done = max(0, int(prog.get("done") or 0))
-        chapter = ""
-        photo_total = max(0, int(prog.get("photo_total") or 0))
-        photo_no = max(0, int(prog.get("current_photo") or 0))
-        if photo_total > 0 and photo_no > 0:
-            photo_no = min(photo_no, photo_total)
-            chapter = f" 第{photo_no}/{photo_total}话"
-        return (
-            f"⏳ 下载进度：{pct}% "
-            f"[{self._progress_bar(pct)}] ({done}/{total}张){chapter}"
-        )
-
     async def _download_album_progress(self, event, album_id, holder, chapters=None):
-        """下载整本并推送进度，结果写入 holder['dir'] / holder['duration']。
+        """下载整本，结果写入 holder['dir'] / holder['duration']。
 
         - 只有所有章节都已有图片时才跳过下载，避免半成品缓存产出残缺 PDF；
         - 图片/CDN 瞬时失败时自动重试，已下载图片会复用缓存；
@@ -2064,12 +2200,7 @@ class JmComicPlugin(Star):
         if folder is not None and self._album_cache_complete(folder, chapters):
             holder["dir"] = folder
             holder["duration"] = 0.0
-            yield self._plain(event, f"📦 JM{album_id} 已有缓存，跳过下载")
             return
-        if folder is not None:
-            yield self._plain(event,
-                f"📦 JM{album_id} 缓存不完整，将只补下缺失话/图片..."
-            )
 
         attempts = 3
         for attempt in range(1, attempts + 1):
@@ -2077,34 +2208,8 @@ class JmComicPlugin(Star):
             task = asyncio.create_task(
                 jmcomic.download_album_async(album_id, self.option, downloader=ProgressDownloader)
             )
-            progress_step = int(getattr(self, "progress_step", 10) or 0)
-            last_pct = -1
-            next_step = progress_step
-            last_sent_at = time.monotonic()
             try:
-                while not task.done():
-                    await asyncio.sleep(3)
-                    if progress_step <= 0:
-                        continue
-                    prog = ProgressDownloader._progress.get(str(album_id))
-                    if not prog or prog.get("finished"):
-                        continue
-                    total = max(0, int(prog.get("total") or 0))
-                    done = max(0, int(prog.get("done") or 0))
-                    if total <= 0:
-                        continue
-                    pct = min(100, max(0, int(done * 100 / total)))
-                    now = time.monotonic()
-                    step_due = pct >= next_step and pct < 100 and pct != last_pct
-                    heartbeat_due = (now - last_sent_at) >= 60 and pct < 100
-                    if not (step_due or heartbeat_due):
-                        continue
-                    message = self._progress_message(prog, pct)
-                    logger.info(message)
-                    yield self._plain(event, message)
-                    last_pct = pct
-                    last_sent_at = now
-                    next_step = ((pct // progress_step) + 1) * progress_step
+                result = await task
             except asyncio.CancelledError:
                 # 用户执行 /jmstop 时，把底层整本下载任务一起取消
                 if not task.done():
@@ -2114,9 +2219,6 @@ class JmComicPlugin(Star):
                 except BaseException:
                     pass
                 raise
-
-            try:
-                result = task.result()
             except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
                 folder = self._find_album_dir(album_id)
                 if attempt < attempts:
@@ -2260,13 +2362,20 @@ class JmComicPlugin(Star):
         total_bytes = 0
         quota_stopped = False
         sent_ranges = {}
+        user_id = str(event.get_sender_id())
+        message_budget = self._message_budget(event)
+        sent_messages = 0
+        tease_text = ""
+
+        yield self._plain(
+            event,
+            f"⬇️ 开始下载：{len(targets)} 个目标，输出 {fmt_label}。"
+            "发送 /jmnow 查看当前进度。",
+        )
+        sent_messages += 1
 
         for target_index, (raw, prefix, target_id) in enumerate(targets):
             target_label = f"[{target_index + 1}/{len(targets)}] JM{target_id}"
-            yield self._plain(
-                event,
-                f"⬇️ 开始下载 JM{target_id}，📦 共 {len(targets)} 个目标，输出格式：{fmt_label}。",
-            )
             try:
                 target = await self._resolve_target(client, raw)
             except Exception as e:
@@ -2277,12 +2386,6 @@ class JmComicPlugin(Star):
                 continue
 
             kind = target["kind"]
-            if kind == "photo":
-                album = target.get("album")
-                album_id = getattr(album, "album_id", "") if album is not None else ""
-                note = f"（所属漫画 JM{album_id}）" if album_id else ""
-                yield self._plain(event, f"ℹ️ {target_label} 是章节ID{note}，按单话处理")
-
             chapters = target["chapters"]
             if not chapters:
                 failed.append(raw)
@@ -2316,11 +2419,6 @@ class JmComicPlugin(Star):
                         continue
                 else:
                     selected = [(1, chapters[0], None)]
-                    if chapter_expr:
-                        yield self._plain(
-                            event,
-                            "ℹ️ 章节ID目标只支持页段参数（如 -c 1:201-），已忽略话参数",
-                        )
 
             album = target.get("album")
             album_id = str(
@@ -2329,6 +2427,22 @@ class JmComicPlugin(Star):
                 or (target_id if kind == "album" else "")
             )
             album_title = getattr(album, "name", "") if album is not None else ""
+            selected_total = sum(
+                self._photo_range_pages(photo, page_range)
+                for _index, photo, page_range in selected
+            )
+            if selected_total <= 0 and kind == "album" and not chapter_expr:
+                try:
+                    selected_total = max(0, int(getattr(album, "page_count", 0) or 0))
+                except (TypeError, ValueError):
+                    selected_total = 0
+            self._update_active_download(
+                user_id,
+                album_id=album_id or target_id,
+                total=selected_total,
+                done=0,
+                stage="downloading",
+            )
             album_dir = None
             # 选章/单章先找已有漫画目录，便于复用已有图片缓存
             if album_id and not (kind == "album" and not chapter_expr):
@@ -2341,6 +2455,7 @@ class JmComicPlugin(Star):
                     async for message in self._download_album_progress(
                         event, target_id, holder, chapters=chapters
                     ):
+                        sent_messages += 1
                         yield message
                 except Exception as e:
                     failed.append(raw)
@@ -2352,38 +2467,45 @@ class JmComicPlugin(Star):
                 if album_dir is None:
                     failed.append(raw)
                     continue
+                self._update_active_download(
+                    user_id, done=selected_total, total=selected_total, stage="packaging"
+                )
             else:
                 # 同一章节可能有多个不连续页段，下载时按章节去重，
                 # 避免重复请求同一章、并把刚下载的章误报成“已有缓存”。
                 download_items = []
                 seen_photos = set()
-                for original_index, photo, _page_range in selected:
+                selected_pages = {}
+                for original_index, photo, page_range in selected:
                     photo_key = str(getattr(photo, "photo_id", original_index))
+                    selected_pages[photo_key] = (
+                        selected_pages.get(photo_key, 0)
+                        + self._photo_range_pages(photo, page_range)
+                    )
                     if photo_key in seen_photos:
                         continue
                     seen_photos.add(photo_key)
                     download_items.append((original_index, photo))
 
-                cached_indexes = []
-                for position, (original_index, photo) in enumerate(download_items):
+                done_pages = 0
+                for original_index, photo in download_items:
+                    photo_key = str(getattr(photo, "photo_id", original_index))
                     if self._chapter_dir(photo, album_dir) is not None:
-                        cached_indexes.append(original_index)
+                        done_pages += selected_pages.get(photo_key, 0)
+                        self._update_active_download(user_id, done=done_pages)
                         continue
-                    yield self._plain(event,
-                        f"⬇️ {target_label} 下载第{original_index}话"
-                        f"（{position + 1}/{len(download_items)}）..."
-                    )
                     try:
                         await self._ensure_photo_downloaded(photo, album_dir)
                     except Exception as e:
                         yield self._plain(event,
                             f"❌ 第{original_index}话下载失败：{e}"
                         )
-                if cached_indexes:
-                    yield self._plain(event,
-                        f"📦 {target_label} 第{self._format_index_ranges(cached_indexes)}话"
-                        "已有缓存，跳过下载"
-                    )
+                        continue
+                    done_pages += selected_pages.get(photo_key, 0)
+                    self._update_active_download(user_id, done=done_pages)
+                self._update_active_download(
+                    user_id, done=done_pages, stage="packaging"
+                )
 
             if album_id and album_dir is None:
                 album_dir = self._find_album_dir(album_id)
@@ -2482,11 +2604,6 @@ class JmComicPlugin(Star):
                     )
                     continue
 
-                page_count = sum(len(images) for _, _, images in chapter_entries)
-                yield self._plain(
-                    event, f"开始打包{output_format.upper()}，共 {page_count} 页..."
-                )
-
                 source_dirs = [folder for _, folder, _ in chapter_entries]
                 album_metadata_path = self._metadata_file(album_dir)
                 if album_metadata_path is not None and album_metadata_path.is_file():
@@ -2538,15 +2655,6 @@ class JmComicPlugin(Star):
                     continue
 
                 size_mb = output_path.stat().st_size / 1024 / 1024
-                # 按约 2MB/s 估算 QQ 上传耗时，并计入发送间隔
-                estimate_seconds = max(
-                    1, math.ceil(size_mb / 2.0) + int(math.ceil(self.send_interval))
-                )
-                yield self._plain(
-                    event,
-                    f"📤 打包完成：文件 {size_mb:.1f}MB，"
-                    f"预计发送耗时约 {estimate_seconds} 秒。"
-                )
                 self._record_file_send()
                 total_files += 1
                 target_sent += 1
@@ -2572,25 +2680,40 @@ class JmComicPlugin(Star):
                     "size_mb": round(sum(target_sizes), 1),
                 })
                 success += 1
-                if not quota_stopped:
+                if not quota_stopped and self.tease_enabled:
                     teases = self._tease_for_count(total_count)
-                    if self.tease_enabled and teases:
+                    if teases:
                         import random
-                        yield self._plain(event, random.choice(teases))
+                        tease_text = random.choice(teases)
             if target_failed:
                 failed.append(f"{raw}(部分话失败)" if target_sent else raw)
 
             if quota_stopped:
                 break
 
+        final_lines = []
         if not quota_stopped:
-            yield self._plain(event,
+            final_lines.append(
                 f"📊 下载完成：成功 {success}/{len(targets)} 个目标，"
                 f"发送 {total_files} 个文件，总计 {total_bytes / 1024 / 1024:.1f}MB\n"
                 f"{self._quota_status_text()}"
             )
+        if tease_text:
+            final_lines.append(tease_text)
         if failed:
-            yield self._plain(event, f"⚠️ 失败目标：{', '.join(failed)}")
+            final_lines.append(f"⚠️ 失败目标：{', '.join(failed)}")
+        # QQ 官方被动消息有 4/5 条预算；1 条开始状态 + 文件数已占满时，
+        # 省略收尾汇总，避免触发主动消息重试和额外延迟。
+        if final_lines and (
+            message_budget is None
+            or sent_messages + total_files < message_budget
+        ):
+            yield self._plain(event, "\n".join(final_lines))
+        elif final_lines:
+            logger.info(
+                "QQ 被动消息预算已用尽，省略下载收尾汇总：%s",
+                " | ".join(final_lines),
+            )
 
     def _parse_search_args(self, args):
         """
@@ -2650,6 +2773,7 @@ class JmComicPlugin(Star):
 
     async def _render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms"):
         """通用搜索结果渲染：分页 + 切片 + 输出"""
+        self._clear_page_session(event)
         PER_QQ_PAGE = self.per_page
         PER_WEB_PAGE = 80
         QQ_PAGES_PER_WEB_PAGE = PER_WEB_PAGE // PER_QQ_PAGE
@@ -2704,17 +2828,20 @@ class JmComicPlugin(Star):
                 except (TypeError, ValueError):
                     total_int = None
             if total_int is not None and total_int <= 0:
+                self._page_sessions.pop(self._page_session_key(event), None)
                 yield self._plain(event, no_result_text)
                 return
             if total_int is not None:
                 max_page = math.ceil(total_int / PER_QQ_PAGE)
                 if qq_page > max_page:
+                    self._page_sessions.pop(self._page_session_key(event), None)
                     yield self._plain(event,
                         f"第{qq_page}页没有更多结果了（共{total_int}条，最多{max_page}页）"
                     )
                     return
 
             if not page_items:
+                self._page_sessions.pop(self._page_session_key(event), None)
                 if total_int is not None:
                     yield self._plain(event, f"第{qq_page}页没有更多结果了")
                 else:
@@ -2742,10 +2869,20 @@ class JmComicPlugin(Star):
             # 关键词若会被敏感词转换，就不把原词写进命令，避免命令本身触发违规。
             next_keyword = keyword if self._safe_text(keyword, self.convert_title) == keyword else "<关键词>"
             next_cmd = f"/{command_name} {next_keyword} {qq_page + 1}"
+            internal_next_cmd = f"/{command_name} {keyword} {qq_page + 1}"
             if order_by != JmMagicConstants.ORDER_BY_LATEST:
                 next_cmd += f" {order_by}"
+                internal_next_cmd += f" {order_by}"
             reply += f"\n下一页：{next_cmd}"
 
+            max_page = (
+                math.ceil(total_int / PER_QQ_PAGE)
+                if total_int is not None
+                else None
+            )
+            self._remember_page(
+                event, internal_next_cmd, qq_page, max_page
+            )
             yield self._plain(event, reply)
 
         except Exception as e:
@@ -2962,6 +3099,7 @@ class JmComicPlugin(Star):
         if not self._check_permission(event):
             yield self._plain(event, self._permission_denied_text(event))
             return
+        self._clear_page_session(event)
 
         args = event.message_str.split()
         if len(args) < 2:
@@ -3075,6 +3213,14 @@ class JmComicPlugin(Star):
                 )
                 return
 
+            if page_num < total_pages:
+                self._remember_page(
+                    event,
+                    f"/jmlist {album_id} {page_num + 1}",
+                    page_num,
+                    total_pages,
+                )
+
         except Exception as e:
             yield self._plain(event, self._handle_jm_exception(e, "获取话列表"))
 
@@ -3121,6 +3267,7 @@ class JmComicPlugin(Star):
                 "  /jmzip <id> -c 31-40        下第31到40话\n"
                 "  /jmzip <id> -c 31,35,40     下指定话\n"
                 "  /jmphoto <id>               等同 /jm <id>（兼容旧命令）\n"
+                "  /jmnow                      查看自己当前下载进度\n"
                 "  /jmstop                     停止当前用户正在进行的下载\n"
                 "━━━━━━━━━━━━━━━\n"
                 "⭐ 账号（仅号主）：\n"
@@ -3145,6 +3292,8 @@ class JmComicPlugin(Star):
                 "  /jmdomain                   查看可用域名\n"
                 "  /jmupdate                   查看更新日志\n"
                 "  /jmrand [关键词]            随机抽一个\n"
+                "  /jmnext                     翻到最近一次列表的下一页\n"
+                "    也可在 {page_turn_timeout} 秒内直接发送“下一页/下页”\n"
                 "━━━━━━━━━━━━━━━\n"
                 "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
                 "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
@@ -3157,6 +3306,7 @@ class JmComicPlugin(Star):
                 "⏳ 文件限额：每日{daily_limit_text}、每小时{hourly_limit_text}（0=不限）".format(
                     client_type=self.client_type.upper(),
                     per_page=self.per_page,
+                    page_turn_timeout=self.page_turn_timeout,
                     cache_days=self.cache_days,
                     pdf_page_limit=self.pdf_page_limit,
                     zip_group_size=self.zip_group_size,
@@ -3187,6 +3337,8 @@ class JmComicPlugin(Star):
         user_id = str(event.get_sender_id())
         if task is not None:
             self._download_tasks.setdefault(user_id, set()).add(task)
+            album_hint = str(target).strip() if str(target).strip().isdigit() else ""
+            self._set_active_download(user_id, task, album_hint)
         try:
             async for message in self._run_download(
                 event, target, output_format, chapter_expr
@@ -3200,6 +3352,7 @@ class JmComicPlugin(Star):
                 tasks.discard(task)
                 if not tasks:
                     self._download_tasks.pop(user_id, None)
+            self._clear_active_download(user_id, task)
 
     # ========== /jmstop 停止下载 ==========
     @filter.command("jmstop")
@@ -3219,6 +3372,87 @@ class JmComicPlugin(Star):
         for task in tasks:
             task.cancel()
         yield self._plain(event, f"⏹️ 已请求停止 {len(tasks)} 个下载任务")
+
+    # ========== /jmnow 当前下载进度 ==========
+    @filter.command("jmnow")
+    async def jm_now(self, event: AstrMessageEvent):
+        """查看当前用户正在进行的下载进度"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
+        state = self._active_download(event.get_sender_id())
+        if not state:
+            yield self._plain(event, "当前还没有下载")
+            return
+
+        album_id = str(state.get("album_id") or "")
+        done = max(0, int(state.get("done") or 0))
+        total = max(0, int(state.get("total") or 0))
+        prog = ProgressDownloader._progress.get(album_id) if album_id else None
+        if prog:
+            done = max(done, int(prog.get("done") or 0))
+            total = max(total, int(prog.get("total") or 0))
+
+        if not album_id:
+            yield self._plain(event, "当前下载：正在识别漫画，请稍候")
+            return
+        if total > 0:
+            done = min(done, total)
+            yield self._plain(
+                event,
+                f"当前下载 JM{album_id}：已完成 {done}/{total} 页，"
+                f"未完成 {total - done} 页",
+            )
+        else:
+            yield self._plain(
+                event,
+                f"当前下载 JM{album_id}：已完成 {done} 页，总页数统计中",
+            )
+
+    # ========== /jmnext 翻页 ==========
+    async def _follow_page_session(self, event, session):
+        next_command = session.get("next_command", "")
+        parts = next_command.strip().split()
+        if not parts:
+            return
+        command = parts[0].lstrip("/").lower()
+        handler_name = self._page_handler_name(command)
+        handler = getattr(self, handler_name, None) if handler_name else None
+        if handler is None:
+            return
+        proxy = PageEventProxy(event, next_command)
+        async for message in handler(proxy):
+            yield message
+
+    @filter.command("jmnext")
+    async def jm_next(self, event: AstrMessageEvent):
+        """翻到最近一次列表的下一页"""
+        if not self._check_permission(event):
+            yield self._plain(event, self._permission_denied_text(event))
+            return
+        session = self._page_session(event)
+        if session is None:
+            yield self._plain(
+                event,
+                "当前没有可翻页的列表，或已超时。请先使用 /jmlist、/jmhis、"
+                "/jmc、/jmrank 或搜索命令。",
+            )
+            return
+        self._page_sessions.pop(self._page_session_key(event), None)
+        async for message in self._follow_page_session(event, session):
+            yield message
+
+    @filter.regex(r"^(?:下一页|下页)$")
+    async def jm_next_keyword(self, event: AstrMessageEvent):
+        """在有效期内发送“下一页/下页”自动翻页；无会话时静默。"""
+        if not self._check_permission(event):
+            return
+        session = self._page_session(event)
+        if session is None:
+            return
+        self._page_sessions.pop(self._page_session_key(event), None)
+        async for message in self._follow_page_session(event, session):
+            yield message
 
     # ========== /jmrand 随机漫画 ==========
     @filter.command("jmrand")
@@ -3782,6 +4016,7 @@ class JmComicPlugin(Star):
         if not self._check_permission(event):
             yield self._plain(event, self._permission_denied_text(event))
             return
+        self._clear_page_session(event)
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event,
@@ -3834,6 +4069,7 @@ class JmComicPlugin(Star):
             page_items = all_items[start:end]
 
             if not page_items:
+                self._page_sessions.pop(self._page_session_key(event), None)
                 yield self._plain(event, "没有更多了")
                 return
 
@@ -3848,6 +4084,9 @@ class JmComicPlugin(Star):
 
             reply = f"🏆 {rank_name}（第{qq_page}页）\n\n" + "\n".join(results)
             reply += f"\n\n下一页：/jmrank {rank_type} {qq_page + 1}"
+            self._remember_page(
+                event, f"/jmrank {rank_type} {qq_page + 1}", qq_page, None
+            )
             yield self._plain(event, reply)
 
         except Exception as e:
@@ -3860,6 +4099,7 @@ class JmComicPlugin(Star):
         if not self._check_permission(event):
             yield self._plain(event, self._permission_denied_text(event))
             return
+        self._clear_page_session(event)
         args = event.message_str.split()
         user_id = event.get_sender_id()
 
@@ -3943,6 +4183,10 @@ class JmComicPlugin(Star):
                 nav.append(f"下一页：/jmhis -all {page_num + 1}")
             if nav:
                 reply += "\n\n" + "\n".join(nav)
+            if page_num < total_pages:
+                self._remember_page(
+                    event, f"/jmhis -all {page_num + 1}", page_num, total_pages
+                )
             yield self._plain(event, reply)
             return
 
@@ -3988,6 +4232,10 @@ class JmComicPlugin(Star):
         if page_num > 1:
             reply += f"\n上一页：/jmhis {page_num - 1}"
         reply += "\n\n/jmhis clear 清空历史"
+        if page_num < total_pages:
+            self._remember_page(
+                event, f"/jmhis {page_num + 1}", page_num, total_pages
+            )
         yield self._plain(event, reply)
 
     # ========== /jmc 评论查看 ==========
@@ -3999,6 +4247,7 @@ class JmComicPlugin(Star):
         if not self._check_permission(event):
             yield self._plain(event, self._permission_denied_text(event))
             return
+        self._clear_page_session(event)
         args = event.message_str.split()
         if len(args) < 2:
             yield self._plain(event, "用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
@@ -4152,6 +4401,12 @@ class JmComicPlugin(Star):
             # 下一页提示
             if page_count is None or page_num < page_count:
                 reply += f"\n\n下一页：/jmc {album_id} {page_num + 1}"
+                self._remember_page(
+                    event,
+                    f"/jmc {album_id} {page_num + 1}",
+                    page_num,
+                    page_count,
+                )
 
             yield self._plain(event, reply[:3500])
 
