@@ -1,6 +1,5 @@
 import os
 import asyncio
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -52,45 +51,6 @@ class JmComicPlugin(Star):
         self.settings.prepare_directories()
 
         settings = self.settings
-        # 兼容层：现有命令实现仍读取插件实例上的这些属性，
-        # 后续按批次迁移到 service 后逐项删除。
-        self.data_dir = settings.data_dir
-        self.download_base_dir = settings.download_base_dir
-        self.zip_base_dir = settings.zip_base_dir
-        self.send_state_file = settings.send_state_file
-        self.history_file = settings.history_file
-        self.checkin_file = settings.checkin_file
-        self.subscription_file = settings.subscription_file
-        self.per_page = settings.per_page
-        self.allow_group = settings.allow_group
-        self.enabled_groups = settings.enabled_groups
-        self.numeric_search_as_album = settings.numeric_search_as_album
-        self.subscribe_interval = settings.subscribe_interval
-        self.convert_enabled = settings.convert_enabled
-        self.convert_title = settings.convert_title
-        self.convert_tags = settings.convert_tags
-        self.convert_author = settings.convert_author
-        self.convert_comment = settings.convert_comment
-        self.sensitive_filter = settings.sensitive_filter
-        self.tease_enabled = settings.tease_enabled
-        self.cache_days = settings.cache_days
-        self.comment_count = settings.comment_count
-        self.history_max = settings.history_max
-        self.dual_search = settings.dual_search
-        self.owner_ids = settings.owner_ids
-        self.daily_file_limit = settings.daily_file_limit
-        self.hourly_file_limit = settings.hourly_file_limit
-        self.send_interval = settings.send_interval
-        self.zip_group_size = settings.zip_group_size
-        self.pdf_page_limit = settings.pdf_page_limit
-        self.zip_page_limit = settings.zip_page_limit
-        self.page_turn_timeout = settings.page_turn_timeout
-        self.use_proxy = settings.use_proxy
-        self.proxy_url = settings.proxy_url
-        self.client_type = settings.client_type
-        self.custom_sensitive_map = settings.custom_sensitive_map
-        self.option = settings.option
-        self.order_map = settings.order_map
 
         self.state = PluginState()
         # 登录态客户端缓存：避免每次命令都重新登录
@@ -131,7 +91,7 @@ class JmComicPlugin(Star):
         )
         self.download_handler = DownloadHandler(
             self.settings, self.access, self.selection, self.runner,
-            self.state, self.progress, self.messaging,
+            self.state, self.progress, self.messaging, self.quota,
         )
         self.search_handler = SearchHandler(
             self.settings, self.access, self.client, self.search,
@@ -169,21 +129,9 @@ class JmComicPlugin(Star):
         )
 
         logger.info(
-            f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
-            f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
+            f"JMComic 插件初始化完成 v0.7.8，客户端: {settings.client_type.upper()}，"
+            f"镜像站: {settings.custom_domains}，代理: {'已启用' if settings.use_proxy else '直连'}"
         )
-
-    # ========== 工具方法 ==========
-
-    def _zip_folder(self, folder_path: Path, zip_path: Path):
-        """打包文件夹为ZIP"""
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, dirs, files in os.walk(folder_path):
-                for file in files:
-                    file_fullpath = Path(root) / file
-                    arcname = file_fullpath.relative_to(folder_path)
-                    zipf.write(file_fullpath, arcname)
-        return zip_path
 
     # ========== /jmv 查详情 ==========
     @filter.command("jmv")
@@ -354,11 +302,11 @@ class JmComicPlugin(Star):
 
     async def initialize(self):
         """插件激活时启动订阅更新检查。"""
-        if self.subscribe_interval > 0 and self.state.subscribe_task is None:
+        if self.settings.subscribe_interval > 0 and self.state.subscribe_task is None:
             if self.state.subscription_lock is None:
                 self.state.subscription_lock = asyncio.Lock()
             self.state.subscribe_task = asyncio.create_task(self.subscriptions.loop())
-            logger.info(f"订阅更新检查已启动，间隔 {self.subscribe_interval} 秒")
+            logger.info(f"订阅更新检查已启动，间隔 {self.settings.subscribe_interval} 秒")
 
     async def terminate(self):
         task = self.state.subscribe_task
