@@ -1,6 +1,8 @@
 """文件发送限额：读取/写入 send_limits.json，统计每日/每小时额度。"""
 
 import json
+import os
+import threading
 from datetime import datetime, timedelta
 
 from astrbot.api import logger
@@ -9,30 +11,36 @@ from astrbot.api import logger
 class FileQuotaService:
     def __init__(self, settings):
         self.settings = settings
+        self._lock = threading.RLock()
 
     def load_send_times(self):
-        try:
-            data = json.loads(self.settings.send_state_file.read_text(encoding="utf-8"))
-            times = data.get("times", []) if isinstance(data, dict) else []
-            result = []
-            for item in times:
-                try:
-                    result.append(datetime.strptime(str(item), "%Y-%m-%dT%H:%M:%S"))
-                except Exception:
-                    continue
-            return result
-        except Exception:
-            return []
+        with self._lock:
+            try:
+                data = json.loads(self.settings.send_state_file.read_text(encoding="utf-8"))
+                times = data.get("times", []) if isinstance(data, dict) else []
+                result = []
+                for item in times:
+                    try:
+                        result.append(datetime.strptime(str(item), "%Y-%m-%dT%H:%M:%S"))
+                    except Exception:
+                        continue
+                return result
+            except Exception:
+                return []
 
     def save_send_times(self, times):
-        try:
-            now = datetime.now()
-            cutoff = now - timedelta(hours=24)
-            times = sorted(t for t in times if t >= cutoff)
-            payload = {"times": [t.strftime("%Y-%m-%dT%H:%M:%S") for t in times]}
-            self.settings.send_state_file.write_text(json.dumps(payload), encoding="utf-8")
-        except Exception as e:
-            logger.debug(f"保存发送限额状态失败: {e}")
+        with self._lock:
+            try:
+                now = datetime.now()
+                cutoff = now - timedelta(hours=24)
+                times = sorted(t for t in times if t >= cutoff)
+                payload = {"times": [t.strftime("%Y-%m-%dT%H:%M:%S") for t in times]}
+                path = self.settings.send_state_file
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(json.dumps(payload), encoding="utf-8")
+                os.replace(tmp, path)
+            except Exception as e:
+                logger.debug(f"保存发送限额状态失败: {e}")
 
     def file_quota(self):
         """返回今日/最近1小时的文件发送额度（本地统计，只统计本插件）
@@ -74,10 +82,11 @@ class FileQuotaService:
         return "不限" if limit <= 0 else str(limit)
 
     def record_file_send(self, count=1):
-        now = datetime.now()
-        times = self.load_send_times()
-        times.extend([now] * max(0, count))
-        self.save_send_times(times)
+        with self._lock:
+            now = datetime.now()
+            times = self.load_send_times()
+            times.extend([now] * max(0, count))
+            self.save_send_times(times)
 
     def block_text(self, remaining_files=0):
         q = self.file_quota()

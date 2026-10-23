@@ -40,6 +40,9 @@
 - 配置默认值调整：`pdf_page_limit` 100→200、`numeric_search_as_album` false→true，配置页 hint 同步
 - 敏感词表整理：修正 `肉便器`/`潮吹`/`幼女`/`猿系` 等拼音，日文假名统一改为对应中文拼音，长词优先匹配，补充高风险词并移除低风险词（共 106 条）
 - 依赖补充 `PyYAML`；移除误提交的 AstrBot 运行残留 `data/`，`.ruff_cache/` 等加入 `.gitignore`
+- 并发稳定性：`JmClientManager` 的缓存检查、登录、TTL 刷新和失效清理统一加线程锁，避免订阅线程与命令协程重复登录
+- 状态文件可靠性：`history.json`、`send_limits.json` 改为进程内锁 + `tmp + os.replace` 原子写
+- PDF 打包：`img2pdf` 改用 `outputstream` 流式写入，避免整个 PDF 以 bytes 常驻内存；旧版不支持时自动回退
 
 ### ✅ 验证
 - `py_compile main.py`、`_conf_schema.json` JSON 校验通过

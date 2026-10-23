@@ -1,5 +1,6 @@
 """jmcomic 客户端管理：登录态缓存与异常翻译。"""
 
+import threading
 import time
 
 from astrbot.api import logger
@@ -27,8 +28,9 @@ class JmClientManager:
         self.settings = settings
         self._cached_client = None
         self._cached_at = 0.0
-        # 延迟创建，避免__init__时event_loop未就绪
-        self._client_lock = None
+        # 订阅检查会通过 asyncio.to_thread(get_client) 在线程里登录，
+        # 命令协程可能同时调用 get_client；用线程锁覆盖“检查缓存 + 登录”。
+        self._client_lock = threading.RLock()
 
     def _login(self, client):
         username = self.settings.username
@@ -52,22 +54,24 @@ class JmClientManager:
         这里在每次创建客户端时主动 login 一次，并按 TTL 刷新。
         """
         # 优先返回仍在有效期内的已登录客户端
-        if (
-            self._cached_client is not None
-            and time.monotonic() - self._cached_at < self.LOGIN_TTL_SECONDS
-        ):
-            return self._cached_client
+        with self._client_lock:
+            if (
+                self._cached_client is not None
+                and time.monotonic() - self._cached_at < self.LOGIN_TTL_SECONDS
+            ):
+                return self._cached_client
 
-        if self._cached_client is None:
-            self._cached_client = self.settings.option.new_jm_client()
-        self._login(self._cached_client)
-        return self._cached_client
+            if self._cached_client is None:
+                self._cached_client = self.settings.option.new_jm_client()
+            self._login(self._cached_client)
+            return self._cached_client
 
     def refresh_client(self):
         """登录态被服务端判定失效时，丢弃缓存并重新登录。"""
-        self._cached_client = None
-        self._cached_at = 0.0
-        return self.get_client()
+        with self._client_lock:
+            self._cached_client = None
+            self._cached_at = 0.0
+            return self.get_client()
 
     @staticmethod
     def is_auth_error(error):
@@ -80,8 +84,9 @@ class JmClientManager:
 
     def invalidate(self):
         """客户端登录态失效时调用，下次请求会重新登录"""
-        self._cached_client = None
-        self._cached_at = 0.0
+        with self._client_lock:
+            self._cached_client = None
+            self._cached_at = 0.0
 
     def configured_username(self):
         try:

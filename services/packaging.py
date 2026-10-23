@@ -143,10 +143,19 @@ class PackagingService:
                     }
                     # 元数据写入失败时不再“无元数据重试”，直接交给
                     # reportlab 分支，优先保证 PDF 标题属性存在。
-                    pdf_bytes = img2pdf.convert(
-                        [str(path) for path in image_paths], **kwargs
-                    )
-                    pdf_path.write_bytes(pdf_bytes)
+                    try:
+                        with pdf_path.open("wb") as output:
+                            img2pdf.convert(
+                                [str(path) for path in image_paths],
+                                outputstream=output,
+                                **kwargs,
+                            )
+                    except TypeError:
+                        # 兼容不支持 outputstream 的旧版 img2pdf
+                        pdf_bytes = img2pdf.convert(
+                            [str(path) for path in image_paths], **kwargs
+                        )
+                        pdf_path.write_bytes(pdf_bytes)
                     return pdf_path
                 except Exception as e:
                     logger.warning(f"img2pdf 合成失败，尝试 reportlab: {e}")
