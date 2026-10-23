@@ -25,6 +25,7 @@ from .core.parsing import parse_positive_page
 from .services.access import AccessService
 from .services.cache import CacheService
 from .services.catalog import CatalogService
+from .services.checkin import CheckinService
 from .services.download import DownloadService
 from .services.download_runner import DownloadRunner
 from .services.messaging import MessagingService
@@ -102,6 +103,7 @@ class JmComicPlugin(Star):
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
         self.history = HistoryService(self.settings)
+        self.checkin = CheckinService(self.settings)
         self.progress = ActiveDownloadService(self.state)
         self.selection = SelectionService(self.settings, self.cache, self.state)
         self.packaging = PackagingService(self.settings, self.catalog)
@@ -934,156 +936,6 @@ class JmComicPlugin(Star):
             yield message
 
     # ========== /jmcheckin 每日签到 ==========
-    @staticmethod
-    def _parse_record_day(value):
-        """把签到记录里的日期（"01" / 1 / "2026-10-01"）统一成几号"""
-        if value is None or isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value if 1 <= value <= 31 else None
-        text = str(value).strip()
-        if not text:
-            return None
-        if '-' in text or '/' in text:
-            text = re.split(r'[-/]', text)[-1]
-        digits = re.sub(r'\D', '', text)
-        if not digits:
-            return None
-        day = int(digits)
-        return day if 1 <= day <= 31 else None
-
-    def _load_checkin_state(self):
-        """读取本机签到状态，接口日历延迟时用于兜底"""
-        try:
-            if self.checkin_file.exists():
-                data = json.loads(self.checkin_file.read_text(encoding="utf-8"))
-                return data if isinstance(data, dict) else {}
-        except Exception:
-            pass
-        return {}
-
-    def _save_checkin_state(self, streak, signed_count=None):
-        """保存本机签到状态"""
-        try:
-            data = {
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "streak": int(streak or 0),
-            }
-            if signed_count is not None:
-                data["signed_count"] = signed_count
-            self.checkin_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            logger.warning(f"保存签到状态失败: {e}")
-
-    def _local_streak(self, today_signed):
-        """接口未返回连续天数时，用本机记录估算"""
-        state = self._load_checkin_state()
-        streak = int(state.get("streak", 0) or 0)
-        if today_signed:
-            return max(1, streak)
-        return max(0, streak)
-
-    @staticmethod
-    def _daily_payload(daily):
-        """取出签到接口的字典数据，兼容 API（model_data）与 HTML（json()）"""
-        try:
-            if hasattr(daily, 'model_data'):
-                data = daily.model_data
-            elif hasattr(daily, 'json'):
-                data = daily.json()
-            else:
-                data = None
-        except Exception:
-            data = None
-        # jmcomic 的 AdvancedDict 不是 dict 子类，必须取 src_dict 后才能当字典用
-        if hasattr(data, 'src_dict'):
-            data = data.src_dict
-        return data if isinstance(data, dict) else {}
-
-    def _parse_daily_info(self, daily, assume_today_signed=False):
-        """解析签到信息。
-        HTML 客户端有 oldStep / error 字段，API 客户端没有，
-        连续天数只能从 record 签到日历里按日期往前逐日统计。
-        """
-        data = self._daily_payload(daily)
-        info = {
-            'streak': None,
-            'today_signed': False,
-            'signed_count': None,
-            'signed_days': set(),
-            'progress': None,
-        }
-        if not data:
-            return info
-
-        progress = data.get('currentProgress') or data.get('current_progress')
-        if progress is not None:
-            info['progress'] = str(progress)
-
-        # HTML 客户端直接给连续天数
-        for key in ('oldStep', 'old_step', 'continuous', 'continuous_days', 'streak'):
-            value = data.get(key)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)):
-                info['streak'] = int(value)
-                break
-            if isinstance(value, str) and value.strip().isdigit():
-                info['streak'] = int(value.strip())
-                break
-
-        # 今日是否已签
-        if data.get('error') == 'finished' or data.get('today_signed') is True:
-            info['today_signed'] = True
-
-        # 签到日历：API 是 record 二维数组，HTML 是 dateArray
-        record = data.get('record')
-        if hasattr(record, 'src_dict'):
-            record = record.src_dict
-        if isinstance(record, dict):
-            record = list(record.values())
-        if isinstance(record, list):
-            for week in record:
-                if hasattr(week, 'src_dict'):
-                    week = week.src_dict
-                days = week if isinstance(week, list) else [week]
-                for day in days:
-                    if hasattr(day, 'src_dict'):
-                        day = day.src_dict
-                    if not isinstance(day, dict) or not day.get('signed'):
-                        continue
-                    day_num = self._parse_record_day(day.get('date'))
-                    if day_num is not None:
-                        info['signed_days'].add(day_num)
-        elif isinstance(data.get('dateArray'), list):
-            for value in data['dateArray']:
-                day_num = self._parse_record_day(value)
-                if day_num is not None:
-                    info['signed_days'].add(day_num)
-
-        if info['signed_days']:
-            info['signed_count'] = len(info['signed_days'])
-            if datetime.now().day in info['signed_days']:
-                info['today_signed'] = True
-
-        if assume_today_signed:
-            info['today_signed'] = True
-            info['signed_days'].add(datetime.now().day)
-
-        # 连续天数兜底：从今天（今天没签则从昨天）往前逐日数
-        if info['streak'] is None and info['signed_days']:
-            today = datetime.now().day
-            cursor = today if today in info['signed_days'] else today - 1
-            streak = 0
-            while cursor >= 1 and cursor in info['signed_days']:
-                streak += 1
-                cursor -= 1
-            info['streak'] = streak
-
-        return info
 
     @filter.command("jmcheckin")
     async def jm_checkin(self, event: AstrMessageEvent):
@@ -1110,7 +962,7 @@ class JmComicPlugin(Star):
             # 先获取签到信息
             yield self.messaging.plain(event, "📅 正在获取签到信息...")
             daily = await asyncio.to_thread(client.get_daily)
-            info = self._parse_daily_info(daily)
+            info = self.checkin.parse_daily_info(daily)
 
             # 执行签到
             yield self.messaging.plain(event, "✅ 正在签到...")
@@ -1138,9 +990,9 @@ class JmComicPlugin(Star):
             if signed_ok:
                 try:
                     daily_after = await asyncio.to_thread(client.get_daily)
-                    final_info = self._parse_daily_info(daily_after, assume_today_signed=True)
+                    final_info = self.checkin.parse_daily_info(daily_after, assume_today_signed=True)
                 except Exception:
-                    final_info = self._parse_daily_info(daily, assume_today_signed=True)
+                    final_info = self.checkin.parse_daily_info(daily, assume_today_signed=True)
             else:
                 final_info = info
 
@@ -1149,13 +1001,13 @@ class JmComicPlugin(Star):
             if final_info.get('streak') is None:
                 final_info['streak'] = info.get('streak')
             if final_info.get('streak') is None:
-                final_info['streak'] = self._local_streak(bool(final_info.get('today_signed')))
+                final_info['streak'] = self.checkin.local_streak(bool(final_info.get('today_signed')))
 
             if signed_ok:
                 streak_to_save = final_info.get('streak')
                 if streak_to_save is None:
                     streak_to_save = 1
-                self._save_checkin_state(streak_to_save, final_info.get('signed_count'))
+                self.checkin.save_state(streak_to_save, final_info.get('signed_count'))
 
             streak_text = f"{final_info['streak']} 天" if final_info.get('streak') is not None else "获取失败"
             reply = f"📅 每日签到\n\n{result_msg}\n\n"
@@ -1202,17 +1054,17 @@ class JmComicPlugin(Star):
             if hasattr(client, 'get_daily'):
                 try:
                     daily = await asyncio.to_thread(client.get_daily)
-                    info = self._parse_daily_info(daily)
+                    info = self.checkin.parse_daily_info(daily)
                 except Exception:
                     info = {}
 
                 # 接口日历更新延迟时，用本机签到记录兜底
-                state = self._load_checkin_state()
+                state = self.checkin.load_state()
                 today_str = datetime.now().strftime('%Y-%m-%d')
                 if state.get('date') == today_str:
                     info['today_signed'] = True
                 if info.get('streak') is None:
-                    info['streak'] = self._local_streak(bool(info.get('today_signed')))
+                    info['streak'] = self.checkin.local_streak(bool(info.get('today_signed')))
                 if info.get('signed_count') is None and state.get('signed_count') is not None:
                     info['signed_count'] = state.get('signed_count')
 
