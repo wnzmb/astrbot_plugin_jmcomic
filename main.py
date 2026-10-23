@@ -30,6 +30,7 @@ from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
+from .services.cache import CacheService
 from .services.messaging import MessagingService
 from .services.pagination import PageEventProxy, PageSessionService
 from .services.history import HistoryService
@@ -94,6 +95,7 @@ class JmComicPlugin(Star):
         self.state = PluginState()
         self.access = AccessService(self.settings)
         self.pagination = PageSessionService(self.settings, self.state)
+        self.cache = CacheService(self.settings)
         self.text = TextService(self.settings)
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
@@ -108,83 +110,6 @@ class JmComicPlugin(Star):
             f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
 
-
-    def _album_dir_has_images(self, folder: Path) -> bool:
-        """判断目录里是否真的有图片（避免把空目录/半成品当作已下载）"""
-        try:
-            for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.gif"):
-                for _ in folder.rglob(pattern):
-                    return True
-        except Exception:
-            pass
-        return False
-
-    def _find_album_dir(self, album_id):
-        """按ID查找已下载的漫画目录。
-        优先使用下载过程中记录的真实目录，其次按目录名前缀匹配，
-        不再依赖 album.save_path（jmcomic 2.7.9 默认 dir_rule 会返回基础目录）。
-        返回 Path 或 None
-        """
-        album_id = str(album_id).strip()
-        base_resolved = self.download_base_dir.resolve()
-
-        # 1) 下载钩子记录的目录最准确
-        recorded = ProgressDownloader._album_dirs.get(album_id)
-        if recorded:
-            folder = Path(recorded)
-            if folder.is_dir() and self._album_dir_has_images(folder):
-                return folder
-
-        # 2) 新版目录是精确的 JM{id}；旧版标题目录作为兜底
-        candidates = []
-        exact = self.download_base_dir / f"JM{album_id}"
-        if exact.is_dir() and exact.resolve() != base_resolved:
-            candidates.append(exact)
-        legacy = [
-            folder for folder in self.download_base_dir.glob(f"JM{album_id}_*")
-            if folder.is_dir() and folder.resolve() != base_resolved
-        ]
-        legacy.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        candidates.extend(legacy)
-        for folder in candidates:
-            if self._album_dir_has_images(folder):
-                return folder
-
-        return None
-
-    @staticmethod
-    def _metadata_file(folder):
-        return Path(folder) / "metadata.json" if folder is not None else None
-
-    def _read_metadata(self, folder):
-        """读取缓存目录的 metadata.json，失败时返回空字典"""
-        if folder is None:
-            return {}
-        try:
-            data = json.loads(self._metadata_file(folder).read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-
-    def _write_metadata(self, folder, data):
-        """原子写入 metadata.json，失败不影响下载和打包"""
-        if folder is None:
-            return False
-        try:
-            folder = Path(folder)
-            folder.mkdir(parents=True, exist_ok=True)
-            path = self._metadata_file(folder)
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            os.replace(tmp, path)
-            return True
-        except Exception as e:
-            logger.warning(f"写入缓存元数据失败: {e}")
-            return False
-
     @staticmethod
     def _text_list(value):
         if value is None:
@@ -197,7 +122,7 @@ class JmComicPlugin(Star):
         name = getattr(album, "name", "") if album is not None else ""
         if name:
             return self.text.safe_text(str(name), self.convert_title)
-        metadata = self._read_metadata(album_dir)
+        metadata = self.cache.read_metadata(album_dir)
         return metadata.get("title_display") or metadata.get("title") or ""
 
     def _chapter_display_title(self, photo, index=1, folder=None, album_dir=None):
@@ -205,12 +130,12 @@ class JmComicPlugin(Star):
         if name:
             return self.text.safe_text(str(name), self.convert_title)
 
-        metadata = self._read_metadata(folder)
+        metadata = self.cache.read_metadata(folder)
         if metadata.get("title_display") or metadata.get("title"):
             return metadata.get("title_display") or metadata.get("title")
 
         photo_id = str(getattr(photo, "photo_id", "") or "")
-        album_metadata = self._read_metadata(album_dir)
+        album_metadata = self.cache.read_metadata(album_dir)
         for item in album_metadata.get("chapters", []) or []:
             if photo_id and str(item.get("photo_id", "")) == photo_id:
                 return item.get("title_display") or item.get("title") or f"第{index}话"
@@ -278,7 +203,7 @@ class JmComicPlugin(Star):
         album_id = str(
             album_id or getattr(album, "album_id", "") or ""
         )
-        existing = self._read_metadata(album_dir)
+        existing = self.cache.read_metadata(album_dir)
         title = str(
             (getattr(album, "name", "") if album is not None else "")
             or existing.get("title", "")
@@ -338,7 +263,7 @@ class JmComicPlugin(Star):
         }
         # 先写入专辑信息，章节标题为空时 _chapter_display_title 可从
         # 专辑元数据里回退；写入章节元数据后再补全专辑里的标题。
-        self._write_metadata(album_dir, album_data)
+        self.cache.write_metadata(album_dir, album_data)
 
         if selected_photos is None:
             selected_photos = all_chapters
@@ -349,7 +274,7 @@ class JmComicPlugin(Star):
             if not photo_id or photo_id in seen:
                 continue
             seen.add(photo_id)
-            folder = self._chapter_dir(photo, album_dir)
+            folder = self.cache.chapter_dir(photo, album_dir)
             if folder is None:
                 continue
             index = next(
@@ -363,9 +288,9 @@ class JmComicPlugin(Star):
                 photo, index, folder, album_dir
             )
             page_arr = getattr(photo, "page_arr", None)
-            page_count = len(page_arr) if page_arr else len(self._chapter_images(folder))
+            page_count = len(page_arr) if page_arr else len(self.cache.chapter_images(folder))
             raw_chapter_title = str(getattr(photo, "name", "") or "")
-            self._write_metadata(folder, {
+            self.cache.write_metadata(folder, {
                 "schema": 1,
                 "album_id": album_id,
                 "album_title": title,
@@ -389,31 +314,11 @@ class JmComicPlugin(Star):
 
         if album_items_changed:
             album_data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            self._write_metadata(album_dir, album_data)
+            self.cache.write_metadata(album_dir, album_data)
 
     def _known_photo_position(self, photo, folder=None, album_dir=None):
         """只返回可确认的网站话序号；取不到时返回 None。"""
-        candidates = []
-        try:
-            candidates.append(getattr(photo, "album_index", None))
-        except Exception:
-            pass
-        photo_id = str(getattr(photo, "photo_id", "") or "")
-        if album_dir is not None and photo_id:
-            for item in self._read_metadata(album_dir).get("chapters", []) or []:
-                if str(item.get("photo_id", "")) == photo_id:
-                    candidates.append(item.get("index"))
-                    break
-        if folder is not None:
-            candidates.append(self._read_metadata(folder).get("index"))
-        for value in candidates:
-            try:
-                value = int(value)
-                if value > 0:
-                    return value
-            except (TypeError, ValueError):
-                continue
-        return None
+        return self.cache.known_photo_position(photo, folder, album_dir)
 
     def _photo_position(self, photo, fallback=1, folder=None, album_dir=None):
         """取章节在漫画中的网站话序号（1 起），失败时回退到调用方序号。"""
@@ -424,14 +329,14 @@ class JmComicPlugin(Star):
 
     def _unit_metadata_index(self, unit, folder):
         try:
-            index = int(self._read_metadata(folder).get("index") or unit.index)
+            index = int(self.cache.read_metadata(folder).get("index") or unit.index)
             return index if index > 0 else unit.index
         except Exception:
             return unit.index
 
     def _album_info_text(self, album, album_id, album_dir, chapter_entries):
         """生成放进 ZIP 的可读漫画信息文件"""
-        metadata = self._read_metadata(album_dir)
+        metadata = self.cache.read_metadata(album_dir)
         title = self._album_display_title(album, album_dir) or f"JM{album_id}"
         authors = self._text_list(
             (getattr(album, "authors", None) if album is not None else None)
@@ -474,7 +379,7 @@ class JmComicPlugin(Star):
 
     def _album_cover_text(self, album, album_id, album_dir, chapter_entries):
         """PDF 首页封面用的精简信息，避免章节过多时溢出"""
-        metadata = self._read_metadata(album_dir)
+        metadata = self.cache.read_metadata(album_dir)
         title = self._album_display_title(album, album_dir) or f"JM{album_id}"
         authors = self._text_list(
             (getattr(album, "authors", None) if album is not None else None)
@@ -512,7 +417,7 @@ class JmComicPlugin(Star):
         return "\n".join(lines)
 
     def _pdf_metadata(self, album, album_id, album_dir, chapter_entries):
-        metadata = self._read_metadata(album_dir)
+        metadata = self.cache.read_metadata(album_dir)
         title = self._album_display_title(album, album_dir) or f"JM{album_id}"
         authors = self._text_list(
             (getattr(album, "authors", None) if album is not None else None)
@@ -540,18 +445,6 @@ class JmComicPlugin(Star):
                 self.text.safe_text(item, self.convert_tags) for item in tags
             )
         return result
-
-    def _album_cache_complete(self, folder: Path, chapters) -> bool:
-        """确认漫画目录下每个章节都有实际图片，避免半成品缓存被当成完整缓存"""
-        if folder is None:
-            return False
-        chapters = list(chapters or [])
-        if not chapters:
-            return self._album_dir_has_images(folder)
-        for photo in chapters:
-            if self._chapter_dir(photo, folder) is None:
-                return False
-        return True
 
     @staticmethod
     def _looks_like_chapter_album(album) -> bool:
@@ -614,9 +507,6 @@ class JmComicPlugin(Star):
         if parent_id.isdigit() and parent_id != str(album_id):
             return parent_id
         return ""
-
-
-
 
     # ========== 工具方法 ==========
 
@@ -877,13 +767,6 @@ class JmComicPlugin(Star):
                 selected.append((index, chapters[index - 1], page_range))
         return selected, invalid, notes
 
-    def _chapter_image_paths(self, photo, album_dir=None):
-        """取章节已下载图片列表；未下载时返回空列表"""
-        folder = self._chapter_dir(photo, album_dir)
-        if folder is None:
-            return []
-        return self._chapter_images(folder)
-
     def _expand_page_units(self, selected, album_dir, page_limit):
         """把选中章节展开成页段。
 
@@ -891,7 +774,7 @@ class JmComicPlugin(Star):
         """
         units = []
         for index, photo, page_range in selected:
-            total = len(self._chapter_image_paths(photo, album_dir))
+            total = len(self.cache.chapter_image_paths(photo, album_dir))
             if total <= 0:
                 units.append(PageUnit(index, photo, 1, 0, 0))
                 continue
@@ -942,7 +825,7 @@ class JmComicPlugin(Star):
             if not page_range:
                 result.append((index, photo, None))
                 continue
-            total = len(self._chapter_image_paths(photo, album_dir))
+            total = len(self.cache.chapter_image_paths(photo, album_dir))
             start, end = page_range
             if total <= 0:
                 result.append((index, photo, page_range))
@@ -1025,81 +908,6 @@ class JmComicPlugin(Star):
                 start = previous = value
         parts.append(str(start) if start == previous else f"{start}-{previous}")
         return ",".join(parts)
-
-    def _migrate_legacy_chapter_dir(self, folder, photo, album_dir=None):
-        """把旧版 P{id} 目录原地改名为 P{id}_第N话，避免升级后重复下载。"""
-        if folder is None:
-            return None
-        try:
-            folder = Path(folder)
-            photo_id = str(getattr(photo, "photo_id", "") or "")
-            if not photo_id or folder.name != f"P{photo_id}":
-                return folder
-            position = self._known_photo_position(photo, folder, album_dir)
-            if position is None:
-                return folder
-            target = folder.with_name(f"P{photo_id}_第{position}话")
-            if target.exists():
-                # 目标目录已存在时，只有确实有图片才使用，避免返回空目录。
-                return target if self._album_dir_has_images(target) else folder
-            folder.rename(target)
-            logger.info(f"缓存目录已迁移：{folder.name} -> {target.name}")
-            return target
-        except Exception as e:
-            logger.warning(f"缓存目录迁移失败（继续使用旧目录）: {e}")
-            return folder
-
-    def _chapter_dir(self, photo, album_dir=None):
-        """定位章节图片目录"""
-        candidates = []
-        try:
-            candidates.append(Path(self.option.decide_image_save_dir(photo, ensure_exists=False)))
-        except Exception:
-            pass
-        save_path = getattr(photo, "save_path", "")
-        if save_path:
-            candidates.append(Path(save_path))
-
-        for folder in candidates:
-            try:
-                if folder.is_dir() and self._album_dir_has_images(folder):
-                    return self._migrate_legacy_chapter_dir(folder, photo, album_dir)
-            except Exception:
-                continue
-
-        # 兜底：在漫画目录下按章节ID/章节名匹配
-        if album_dir is not None:
-            name = getattr(photo, "name", "") or ""
-            photo_id = str(getattr(photo, "photo_id", "") or "")
-            try:
-                subs = [sub for sub in album_dir.iterdir() if sub.is_dir()]
-                # 1) 新版精确 P{id}_第N话；旧版 P{id}/P{id}_标题 兼容并迁移
-                if photo_id:
-                    exact = album_dir / f"P{photo_id}"
-                    if exact.is_dir() and self._album_dir_has_images(exact):
-                        return self._migrate_legacy_chapter_dir(exact, photo, album_dir)
-                    for sub in subs:
-                        if sub.name.startswith(f"P{photo_id}_") and self._album_dir_has_images(sub):
-                            return sub
-                # 2) 标题完全匹配
-                if name:
-                    for sub in subs:
-                        if sub.name == name and self._album_dir_has_images(sub):
-                            return sub
-                    # 3) 最后才允许包含匹配（旧缓存标题可能带前后缀）
-                    for sub in subs:
-                        if name in sub.name and self._album_dir_has_images(sub):
-                            return sub
-            except Exception:
-                pass
-        return None
-
-    @staticmethod
-    def _chapter_images(chapter_dir: Path):
-        files = []
-        for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.gif"):
-            files.extend(chapter_dir.glob(pattern))
-        return sorted(files, key=lambda p: p.name)
 
     def _output_fresh(self, output: Path, source_dirs):
         """输出文件存在且不比源图片/元数据旧时直接复用"""
@@ -1428,8 +1236,8 @@ class JmComicPlugin(Star):
         - 图片/CDN 瞬时失败时自动重试，已下载图片会复用缓存；
         - 重试后仍有失败时，允许发送已完成章节，并由上层报告部分失败。
         """
-        folder = self._find_album_dir(album_id)
-        if folder is not None and self._album_cache_complete(folder, chapters):
+        folder = self.cache.find_album_dir(album_id)
+        if folder is not None and self.cache.album_cache_complete(folder, chapters):
             holder["dir"] = folder
             holder["duration"] = 0.0
             return
@@ -1452,7 +1260,7 @@ class JmComicPlugin(Star):
                     pass
                 raise
             except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
-                folder = self._find_album_dir(album_id)
+                folder = self.cache.find_album_dir(album_id)
                 if attempt < attempts:
                     yield self.messaging.plain(event,
                         f"⚠️ 第{attempt}次下载有图片失败（{type(e).__name__}），"
@@ -1460,7 +1268,7 @@ class JmComicPlugin(Star):
                     )
                     await asyncio.sleep(3)
                     continue
-                if folder is not None and self._album_dir_has_images(folder):
+                if folder is not None and self.cache.album_dir_has_images(folder):
                     holder["dir"] = folder
                     holder["duration"] = 0.0
                     holder["partial"] = True
@@ -1471,12 +1279,12 @@ class JmComicPlugin(Star):
                     return
                 raise
 
-            folder = self._find_album_dir(album_id)
+            folder = self.cache.find_album_dir(album_id)
             holder["dir"] = folder
             holder["duration"] = float(getattr(result, "duration", 0) or 0)
             if folder is None:
                 yield self.messaging.plain(event, "⚠️ 下载完成但找不到漫画目录")
-            elif chapters and not self._album_cache_complete(folder, chapters):
+            elif chapters and not self.cache.album_cache_complete(folder, chapters):
                 holder["partial"] = True
                 yield self.messaging.plain(event,
                     "⚠️ 下载结束但仍有话缺失，将先发送已完成话；"
@@ -1486,15 +1294,15 @@ class JmComicPlugin(Star):
 
     async def _ensure_photo_downloaded(self, photo, album_dir=None):
         """确保单章已下载，返回 (目录, 耗时)"""
-        folder = self._chapter_dir(photo, album_dir)
+        folder = self.cache.chapter_dir(photo, album_dir)
         if folder is not None:
             return folder, 0.0
 
         try:
             result = await jmcomic.download_photo_async(photo.photo_id, self.option)
         except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
-            folder = self._chapter_dir(photo, album_dir)
-            if folder is not None and self._album_dir_has_images(folder):
+            folder = self.cache.chapter_dir(photo, album_dir)
+            if folder is not None and self.cache.album_dir_has_images(folder):
                 logger.warning(f"第{getattr(photo, 'photo_id', '')}话部分图片失败，先使用已下载图片: {e}")
                 return folder, 0.0
             raise
@@ -1503,7 +1311,7 @@ class JmComicPlugin(Star):
             detail.from_album = photo.from_album
         if not getattr(photo, "name", "") and getattr(detail, "name", ""):
             photo.name = detail.name
-        folder = self._chapter_dir(detail, album_dir) or self._chapter_dir(photo, album_dir)
+        folder = self.cache.chapter_dir(detail, album_dir) or self.cache.chapter_dir(photo, album_dir)
         return folder, float(getattr(result, "duration", 0) or 0)
 
     def _tease_for_count(self, count):
@@ -1546,7 +1354,7 @@ class JmComicPlugin(Star):
         result = []
         skipped = []
         for index, photo, page_range in selected:
-            total = len(self._chapter_image_paths(photo, album_dir))
+            total = len(self.cache.chapter_image_paths(photo, album_dir))
             if total <= 0:
                 result.append((index, photo, page_range))
                 continue
@@ -1678,7 +1486,7 @@ class JmComicPlugin(Star):
             album_dir = None
             # 选章/单章先找已有漫画目录，便于复用已有图片缓存
             if album_id and not (kind == "album" and not chapter_expr):
-                album_dir = self._find_album_dir(album_id)
+                album_dir = self.cache.find_album_dir(album_id)
 
             # 整本下载走 download_album_async；选章/单章逐章下载
             if kind == "album" and not chapter_expr:
@@ -1722,7 +1530,7 @@ class JmComicPlugin(Star):
                 done_pages = 0
                 for original_index, photo in download_items:
                     photo_key = str(getattr(photo, "photo_id", original_index))
-                    if self._chapter_dir(photo, album_dir) is not None:
+                    if self.cache.chapter_dir(photo, album_dir) is not None:
                         done_pages += selected_pages.get(photo_key, 0)
                         self.progress.update(user_id, done=done_pages)
                         continue
@@ -1740,7 +1548,7 @@ class JmComicPlugin(Star):
                 )
 
             if album_id and album_dir is None:
-                album_dir = self._find_album_dir(album_id)
+                album_dir = self.cache.find_album_dir(album_id)
             if album_dir is not None:
                 self._save_target_metadata(
                     album,
@@ -1807,7 +1615,7 @@ class JmComicPlugin(Star):
 
                 chapter_entries = []
                 for unit in group:
-                    folder = self._chapter_dir(unit.photo, album_dir)
+                    folder = self.cache.chapter_dir(unit.photo, album_dir)
                     if folder is None:
                         try:
                             folder, _ = await self._ensure_photo_downloaded(unit.photo, album_dir)
@@ -1817,7 +1625,7 @@ class JmComicPlugin(Star):
                     if folder is None:
                         target_failed += 1
                         continue
-                    images = self._chapter_images(folder)
+                    images = self.cache.chapter_images(folder)
                     if not images:
                         target_failed += 1
                         continue
