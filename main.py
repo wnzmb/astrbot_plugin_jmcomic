@@ -29,6 +29,7 @@ try:
 except ImportError:
     DownloadCancelledException = None
 from .core.config import PluginSettings
+from .core.state import PluginState
 from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
 
@@ -101,18 +102,7 @@ class JmComicPlugin(Star):
         self.option = settings.option
         self.order_map = settings.order_map
 
-        self._id_type_cache = {}
-        # 当前用户正在执行的下载任务，供 /jmstop 取消
-        self._download_tasks: dict[str, set] = {}
-        # 当前用户下载进度，供 /jmnow 查看
-        self._active_downloads: dict[str, dict] = {}
-        # 最近一次分页结果，供 /jmnext 和“下一页/下页”使用
-        self._page_sessions: dict[tuple, dict] = {}
-        # 收藏夹导出二次确认：key=(发送者, umo, 操作) -> 首次输入时间
-        self._pending_exports: dict[tuple, float] = {}
-        # 订阅更新后台检查任务
-        self._subscribe_task = None
-        self._subscription_lock = None
+        self.state = PluginState()
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self._cached_client = None
@@ -930,7 +920,7 @@ class JmComicPlugin(Star):
 
     # ========== 下载进度 / 分页会话 ==========
     def _set_active_download(self, user_id, task, target=""):
-        self._active_downloads[str(user_id)] = {
+        self.state.active_downloads[str(user_id)] = {
             "task": task,
             "album_id": str(target or ""),
             "total": 0,
@@ -940,7 +930,7 @@ class JmComicPlugin(Star):
         }
 
     def _update_active_download(self, user_id, **kwargs):
-        state = self._active_downloads.get(str(user_id))
+        state = self.state.active_downloads.get(str(user_id))
         if not state:
             return
         state.update(kwargs)
@@ -948,19 +938,19 @@ class JmComicPlugin(Star):
 
     def _clear_active_download(self, user_id, task=None):
         user_id = str(user_id)
-        state = self._active_downloads.get(user_id)
+        state = self.state.active_downloads.get(user_id)
         if state and (task is None or state.get("task") is task):
-            self._active_downloads.pop(user_id, None)
+            self.state.active_downloads.pop(user_id, None)
 
     def _active_download(self, user_id):
-        state = self._active_downloads.get(str(user_id))
+        state = self.state.active_downloads.get(str(user_id))
         if not state:
             return None
         task = state.get("task")
         if task is not None:
             try:
                 if task.done():
-                    self._active_downloads.pop(str(user_id), None)
+                    self.state.active_downloads.pop(str(user_id), None)
                     return None
             except Exception:
                 pass
@@ -975,9 +965,9 @@ class JmComicPlugin(Star):
         if self.page_turn_timeout <= 0 or not next_command:
             return
         if total_pages is not None and page >= int(total_pages):
-            self._page_sessions.pop(self._page_session_key(event), None)
+            self.state.page_sessions.pop(self._page_session_key(event), None)
             return
-        self._page_sessions[self._page_session_key(event)] = {
+        self.state.page_sessions[self._page_session_key(event)] = {
             "next_command": next_command,
             "page": int(page),
             "total_pages": int(total_pages) if total_pages is not None else None,
@@ -986,16 +976,16 @@ class JmComicPlugin(Star):
 
     def _page_session(self, event):
         key = self._page_session_key(event)
-        session = self._page_sessions.get(key)
+        session = self.state.page_sessions.get(key)
         if not session:
             return None
         if time.monotonic() > session.get("expires_at", 0):
-            self._page_sessions.pop(key, None)
+            self.state.page_sessions.pop(key, None)
             return None
         return session
 
     def _clear_page_session(self, event):
-        self._page_sessions.pop(self._page_session_key(event), None)
+        self.state.page_sessions.pop(self._page_session_key(event), None)
 
     @staticmethod
     def _is_qq_official(event):
@@ -1174,7 +1164,7 @@ class JmComicPlugin(Star):
             raise ValueError(f"无效ID：{token}")
 
         cache_key = f"{prefix}:{target_id}" if prefix else target_id
-        kind = self._id_type_cache.get(cache_key)
+        kind = self.state.id_type_cache.get(cache_key)
         album_probe = None
         photo_probe = None
 
@@ -1197,7 +1187,7 @@ class JmComicPlugin(Star):
                 except MissingAlbumPhotoException:
                     album_probe = await asyncio.to_thread(client.get_album_detail, target_id)
                     kind = "album"
-            self._id_type_cache[cache_key] = kind
+            self.state.id_type_cache[cache_key] = kind
 
         if kind == "album":
             album = album_probe or await asyncio.to_thread(client.get_album_detail, target_id)
@@ -2565,20 +2555,20 @@ class JmComicPlugin(Star):
                 except (TypeError, ValueError):
                     total_int = None
             if total_int is not None and total_int <= 0:
-                self._page_sessions.pop(self._page_session_key(event), None)
+                self.state.page_sessions.pop(self._page_session_key(event), None)
                 yield self._plain(event, no_result_text)
                 return
             if total_int is not None:
                 max_page = math.ceil(total_int / PER_QQ_PAGE)
                 if qq_page > max_page:
-                    self._page_sessions.pop(self._page_session_key(event), None)
+                    self.state.page_sessions.pop(self._page_session_key(event), None)
                     yield self._plain(event,
                         f"第{qq_page}页没有更多结果了（共{total_int}条，最多{max_page}页）"
                     )
                     return
 
             if not page_items:
-                self._page_sessions.pop(self._page_session_key(event), None)
+                self.state.page_sessions.pop(self._page_session_key(event), None)
                 if total_int is not None:
                     yield self._plain(event, f"第{qq_page}页没有更多结果了")
                 else:
@@ -3073,7 +3063,7 @@ class JmComicPlugin(Star):
         task = asyncio.current_task()
         user_id = str(event.get_sender_id())
         if task is not None:
-            self._download_tasks.setdefault(user_id, set()).add(task)
+            self.state.download_tasks.setdefault(user_id, set()).add(task)
             album_hint = str(target).strip() if str(target).strip().isdigit() else ""
             self._set_active_download(user_id, task, album_hint)
         try:
@@ -3084,11 +3074,11 @@ class JmComicPlugin(Star):
         except asyncio.CancelledError:
             yield self._plain(event, "⏹️ 当前下载已停止")
         finally:
-            tasks = self._download_tasks.get(user_id)
+            tasks = self.state.download_tasks.get(user_id)
             if tasks is not None:
                 tasks.discard(task)
                 if not tasks:
-                    self._download_tasks.pop(user_id, None)
+                    self.state.download_tasks.pop(user_id, None)
             self._clear_active_download(user_id, task)
 
     # ========== /jmstop 停止下载 ==========
@@ -3100,7 +3090,7 @@ class JmComicPlugin(Star):
             return
         user_id = str(event.get_sender_id())
         tasks = [
-            task for task in self._download_tasks.get(user_id, set())
+            task for task in self.state.download_tasks.get(user_id, set())
             if not task.done()
         ]
         if not tasks:
@@ -3175,7 +3165,7 @@ class JmComicPlugin(Star):
                 "/jmc、/jmrank 或搜索命令。",
             )
             return
-        self._page_sessions.pop(self._page_session_key(event), None)
+        self.state.page_sessions.pop(self._page_session_key(event), None)
         async for message in self._follow_page_session(event, session):
             yield message
 
@@ -3187,7 +3177,7 @@ class JmComicPlugin(Star):
         session = self._page_session(event)
         if session is None:
             return
-        self._page_sessions.pop(self._page_session_key(event), None)
+        self.state.page_sessions.pop(self._page_session_key(event), None)
         async for message in self._follow_page_session(event, session):
             yield message
 
@@ -3806,7 +3796,7 @@ class JmComicPlugin(Star):
             page_items = all_items[start:end]
 
             if not page_items:
-                self._page_sessions.pop(self._page_session_key(event), None)
+                self.state.page_sessions.pop(self._page_session_key(event), None)
                 yield self._plain(event, "没有更多了")
                 return
 
@@ -4033,7 +4023,7 @@ class JmComicPlugin(Star):
 
             # 超页检测：如果已知总页数且超过，直接提示（避免API返回重复内容）
             comment_cache_key = f"comment_pages_{album_id}"
-            known_max_page = getattr(self, '_comment_page_cache', {}).get(comment_cache_key)
+            known_max_page = self.state.comment_page_cache.get(comment_cache_key)
             if known_max_page and page_num > known_max_page:
                 yield self._plain(event, f"⚠️ JM{album_id} 评论共 {known_max_page} 页，已到最后一页")
                 return
@@ -4044,9 +4034,7 @@ class JmComicPlugin(Star):
             total = getattr(page, 'total', None)
             page_count = getattr(page, 'page_count', None)
             if page_count:
-                if not hasattr(self, '_comment_page_cache'):
-                    self._comment_page_cache = {}
-                self._comment_page_cache[comment_cache_key] = page_count
+                self.state.comment_page_cache[comment_cache_key] = page_count
 
             # 0 条评论不是“超页”，优先显示自然文案
             if page_count == 0:
@@ -4431,9 +4419,9 @@ class JmComicPlugin(Star):
         data = self._load_subscriptions()
         if not data:
             return
-        if self._subscription_lock is None:
-            self._subscription_lock = asyncio.Lock()
-        async with self._subscription_lock:
+        if self.state.subscription_lock is None:
+            self.state.subscription_lock = asyncio.Lock()
+        async with self.state.subscription_lock:
             client = await asyncio.to_thread(self._new_logged_client)
             changed = False
             for umo, subs in list(data.items()):
@@ -4682,8 +4670,8 @@ class JmComicPlugin(Star):
             action_key = f"export:{folder_id}"
             key = (*user_key, action_key)
             now = time.monotonic()
-            self._pending_exports = {
-                k: v for k, v in self._pending_exports.items()
+            self.state.pending_exports = {
+                k: v for k, v in self.state.pending_exports.items()
                 if now - v <= 30
                 and not (
                     k[0] == user_key[0]
@@ -4694,15 +4682,15 @@ class JmComicPlugin(Star):
             command_text = "/jmfav export"
             if len(args) == 3:
                 command_text += f" {args[2]}"
-            if key not in self._pending_exports:
-                self._pending_exports[key] = now
+            if key not in self.state.pending_exports:
+                self.state.pending_exports[key] = now
                 yield self._plain(event,
                     f"⚠️ 即将导出收藏夹 [ID:{folder_id}] 为 CSV 文件。\n"
                     "导出会把账号收藏数据写入文件并发送到当前会话，请确认不是误触。\n"
                     f"请在 30 秒内再次输入完全相同的命令确认：\n{command_text}"
                 )
                 return
-            self._pending_exports.pop(key, None)
+            self.state.pending_exports.pop(key, None)
             async for item in self._export_favorites(event, folder_id):
                 yield item
             return
@@ -4821,15 +4809,15 @@ class JmComicPlugin(Star):
 
     async def initialize(self):
         """插件激活时启动订阅更新检查。"""
-        if self.subscribe_interval > 0 and self._subscribe_task is None:
-            if self._subscription_lock is None:
-                self._subscription_lock = asyncio.Lock()
-            self._subscribe_task = asyncio.create_task(self._subscription_loop())
+        if self.subscribe_interval > 0 and self.state.subscribe_task is None:
+            if self.state.subscription_lock is None:
+                self.state.subscription_lock = asyncio.Lock()
+            self.state.subscribe_task = asyncio.create_task(self._subscription_loop())
             logger.info(f"订阅更新检查已启动，间隔 {self.subscribe_interval} 秒")
 
     async def terminate(self):
-        task = self._subscribe_task
-        self._subscribe_task = None
+        task = self.state.subscribe_task
+        self.state.subscribe_task = None
         if task is not None:
             task.cancel()
             try:
