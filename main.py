@@ -31,6 +31,7 @@ from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
 from .services.messaging import MessagingService
+from .services.history import HistoryService
 from .services.quota import FileQuotaService
 from .services.text import TextService
 
@@ -106,6 +107,7 @@ class JmComicPlugin(Star):
         self.text = TextService(self.settings)
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
+        self.history = HistoryService(self.settings)
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self.client = JmClientManager(self.settings)
@@ -622,35 +624,6 @@ class JmComicPlugin(Star):
             return parent_id
         return ""
 
-    def _load_history(self):
-        """加载下载历史，结构是 {user_id: [历史列表]}"""
-        try:
-            data = json.loads(self.history_file.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-            else:
-                return {}
-        except:
-            return {}
-
-    def _save_history(self, data):
-        """保存下载历史"""
-        self.history_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _get_user_history(self, user_id):
-        data = self._load_history()
-        return data.get(user_id, [])
-
-    def _add_user_history(self, user_id, item):
-        data = self._load_history()
-        if user_id not in data:
-            data[user_id] = []
-        data[user_id].insert(0, item)
-        # history_max 为 0 表示保留全部历史
-        if self.history_max > 0:
-            data[user_id] = data[user_id][:self.history_max]
-        self._save_history(data)
-        return len(data[user_id])
 
     # ========== 下载进度 / 分页会话 ==========
     def _set_active_download(self, user_id, task, target=""):
@@ -2022,7 +1995,7 @@ class JmComicPlugin(Star):
                 await asyncio.sleep(self.send_interval)
 
             if target_sent:
-                total_count = self._add_user_history(event.get_sender_id(), {
+                total_count = self.history.add_user(event.get_sender_id(), {
                     "id": target_id,
                     "title": target_title,
                     "time": time.strftime("%Y-%m-%d %H:%M"),
@@ -3436,10 +3409,10 @@ class JmComicPlugin(Star):
         user_id = event.get_sender_id()
 
         if len(args) >= 2 and args[1].lower() == "clear":
-            data = self._load_history()
+            data = self.history.load()
             if user_id in data:
                 del data[user_id]
-            self._save_history(data)
+            self.history.save(data)
             yield self.messaging.plain(event, "🧹 你的下载历史已清空")
             return
 
@@ -3465,7 +3438,7 @@ class JmComicPlugin(Star):
             if not is_admin:
                 yield self.messaging.plain(event, "⚠️ 只有管理员可以使用 /jmhis -all")
                 return
-            data = self._load_history()
+            data = self.history.load()
             if not data:
                 yield self.messaging.plain(event, "还没有任何下载记录")
                 return
@@ -3531,7 +3504,7 @@ class JmComicPlugin(Star):
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmhis [页码]")
             return
 
-        history = self._get_user_history(user_id)
+        history = self.history.get_user(user_id)
         if not history:
             yield self.messaging.plain(event, "还没有下载记录")
             return
