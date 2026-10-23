@@ -26,6 +26,12 @@ class AccessService:
             "或让管理员把本群号加入 enabled_groups"
         )
 
+    def is_admin(self, event) -> bool:
+        """AstrBot 管理员判断：优先用事件自带方法，旧版本回退到 role 字段。"""
+        if hasattr(event, "is_admin"):
+            return bool(event.is_admin())
+        return getattr(event, "role", "") == "admin"
+
     def is_owner(self, event) -> bool:
         """方案B：只有配置在 owner_ids 里的发送者才能使用账号类命令"""
         if not self.settings.owner_ids:

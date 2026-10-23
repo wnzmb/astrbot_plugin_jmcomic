@@ -13,7 +13,7 @@ class LibraryHandler:
         self.settings = settings
         self.access = access
         self.client = client
-        self.history = history
+        self.history_service = history
         self.pagination = pagination
         self.messaging = messaging
         self.text = text
@@ -112,10 +112,10 @@ class LibraryHandler:
         user_id = event.get_sender_id()
 
         if len(args) >= 2 and args[1].lower() == "clear":
-            data = self.history.load()
+            data = self.history_service.load()
             if user_id in data:
                 del data[user_id]
-            self.history.save(data)
+            self.history_service.save(data)
             yield self.messaging.plain(event, "🧹 你的下载历史已清空")
             return
 
@@ -137,11 +137,10 @@ class LibraryHandler:
                     yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmhis [页码] -all")
                     return
 
-            is_admin = event.is_admin() if hasattr(event, 'is_admin') else getattr(event, 'role', '') == 'admin'
-            if not is_admin:
+            if not self.access.is_admin(event):
                 yield self.messaging.plain(event, "⚠️ 只有管理员可以使用 /jmhis -all")
                 return
-            data = self.history.load()
+            data = self.history_service.load()
             if not data:
                 yield self.messaging.plain(event, "还没有任何下载记录")
                 return
@@ -207,7 +206,7 @@ class LibraryHandler:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmhis [页码]")
             return
 
-        history = self.history.get_user(user_id)
+        history = self.history_service.get_user(user_id)
         if not history:
             yield self.messaging.plain(event, "还没有下载记录")
             return
