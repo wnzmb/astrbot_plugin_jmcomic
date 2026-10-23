@@ -30,6 +30,7 @@ from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
+from .services.text import TextService
 
 
 class PageEventProxy:
@@ -102,6 +103,7 @@ class JmComicPlugin(Star):
 
         self.state = PluginState()
         self.access = AccessService(self.settings)
+        self.text = TextService(self.settings)
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self.client = JmClientManager(self.settings)
@@ -209,25 +211,6 @@ class JmComicPlugin(Star):
         )
 
 
-    def _to_simplified(self, text):
-        """繁体转简体"""
-        if not self.convert_enabled or not text:
-            return text
-        try:
-            import zhconv
-            return zhconv.convert(text, 'zh-cn')
-        except:
-            return text
-
-    def _to_traditional(self, text):
-        """简体转繁体，用于搜索"""
-        if not text:
-            return text
-        try:
-            import zhconv
-            return zhconv.convert(text, 'zh-tw')
-        except:
-            return text
 
     def _album_dir_has_images(self, folder: Path) -> bool:
         """判断目录里是否真的有图片（避免把空目录/半成品当作已下载）"""
@@ -316,14 +299,14 @@ class JmComicPlugin(Star):
     def _album_display_title(self, album, album_dir=None):
         name = getattr(album, "name", "") if album is not None else ""
         if name:
-            return self._safe_text(str(name), self.convert_title)
+            return self.text.safe_text(str(name), self.convert_title)
         metadata = self._read_metadata(album_dir)
         return metadata.get("title_display") or metadata.get("title") or ""
 
     def _chapter_display_title(self, photo, index=1, folder=None, album_dir=None):
         name = getattr(photo, "name", "") if photo is not None else ""
         if name:
-            return self._safe_text(str(name), self.convert_title)
+            return self.text.safe_text(str(name), self.convert_title)
 
         metadata = self._read_metadata(folder)
         if metadata.get("title_display") or metadata.get("title"):
@@ -372,7 +355,7 @@ class JmComicPlugin(Star):
     def _format_chapter_line(self, photo, index, limit=50):
         """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。"""
         position = self._photo_position(photo, index)
-        title = self._safe_text(getattr(photo, "name", ""), self.convert_title)
+        title = self.text.safe_text(getattr(photo, "name", ""), self.convert_title)
         title = title[:limit] if title else ""
         pages = self._photo_page_count(photo)
         if title:
@@ -404,7 +387,7 @@ class JmComicPlugin(Star):
             or existing.get("title", "")
             or ""
         )
-        title_display = self._safe_text(title, self.convert_title) if title else ""
+        title_display = self.text.safe_text(title, self.convert_title) if title else ""
         authors = self._text_list(
             (getattr(album, "authors", None) if album is not None else None)
             or existing.get("authors", [])
@@ -414,10 +397,10 @@ class JmComicPlugin(Star):
             or existing.get("tags", [])
         )
         author_display = [
-            self._safe_text(item, self.convert_author) for item in authors
+            self.text.safe_text(item, self.convert_author) for item in authors
         ]
         tag_display = [
-            self._safe_text(item, self.convert_tags) for item in tags
+            self.text.safe_text(item, self.convert_tags) for item in tags
         ]
 
         existing_chapters = {
@@ -431,7 +414,7 @@ class JmComicPlugin(Star):
             photo_id = str(getattr(photo, "photo_id", "") or "")
             previous = existing_chapters.get(photo_id, {})
             chapter_title_display = (
-                self._safe_text(photo_title, self.convert_title)
+                self.text.safe_text(photo_title, self.convert_title)
                 if photo_title else previous.get("title_display", "")
             )
             item = {
@@ -568,11 +551,11 @@ class JmComicPlugin(Star):
         ]
         if authors:
             lines.append("作者：" + "、".join(
-                self._safe_text(item, self.convert_author) for item in authors
+                self.text.safe_text(item, self.convert_author) for item in authors
             ))
         if tags:
             lines.append("标签：" + "、".join(
-                self._safe_text(item, self.convert_tags) for item in tags
+                self.text.safe_text(item, self.convert_tags) for item in tags
             ))
         lines.append("")
         lines.append("本次包含：")
@@ -611,11 +594,11 @@ class JmComicPlugin(Star):
         lines = [title, f"JM{album_id}"]
         if authors:
             lines.append("作者：" + "、".join(
-                self._safe_text(item, self.convert_author) for item in authors
+                self.text.safe_text(item, self.convert_author) for item in authors
             ))
         if tags:
             lines.append("标签：" + "、".join(
-                self._safe_text(item, self.convert_tags) for item in tags
+                self.text.safe_text(item, self.convert_tags) for item in tags
             ))
         if indexes:
             index_text = self._format_index_token(indexes)
@@ -653,11 +636,11 @@ class JmComicPlugin(Star):
         }
         if authors:
             result["author"] = "、".join(
-                self._safe_text(item, self.convert_author) for item in authors
+                self.text.safe_text(item, self.convert_author) for item in authors
             )
         if tags:
             result["keywords"] = "、".join(
-                self._safe_text(item, self.convert_tags) for item in tags
+                self.text.safe_text(item, self.convert_tags) for item in tags
             )
         return result
 
@@ -765,50 +748,6 @@ class JmComicPlugin(Star):
         self._save_history(data)
         return len(data[user_id])
 
-    def _sanitize_tags(self, tags):
-        """敏感词替换成拼音，避免QQ审核"""
-        if not self.sensitive_filter:
-            return tags
-        import re
-        from pypinyin import lazy_pinyin
-
-        sensitive_map = {}
-        # 合并用户自定义敏感词
-        sensitive_map.update(self.custom_sensitive_map)
-        result = []
-        for tag in tags:
-            # 先替换已知敏感词
-            for cn, pinyin in sensitive_map.items():
-                if cn in tag:
-                    tag = tag.replace(cn, pinyin)
-
-            # 匹配 "X交" 和 "X乳"，只把这两个字转拼音
-            def replace_jiao(match):
-                word = match.group(0)
-                return ''.join(lazy_pinyin(word))
-            def replace_ru(match):
-                word = match.group(0)
-                return ''.join(lazy_pinyin(word))
-
-            tag = re.sub(r'.交', replace_jiao, tag)
-            tag = re.sub(r'.乳', replace_ru, tag)
-
-            result.append(tag)
-        return result
-
-    def _safe_text(self, text, simplify=None):
-        """统一处理所有对外展示的动态文本：繁简转换 + 敏感词转拼音"""
-        if not text:
-            return text
-        if not isinstance(text, str):
-            text = str(text)
-        if simplify is None:
-            simplify = self.convert_title
-        if simplify:
-            text = self._to_simplified(text)
-        if self.sensitive_filter:
-            text = self._sanitize_tags([text])[0]
-        return text
 
     # 账号类命令不经过全局敏感词转换，避免把用户 ID/账号信息误处理
     _ACCOUNT_COMMANDS = {"jmcheckin", "jmme", "jmfav", "jmwhoami"}
@@ -824,7 +763,7 @@ class JmComicPlugin(Star):
         """所有非账号类输出统一做繁简/敏感词处理"""
         if self._command_name(event) in self._ACCOUNT_COMMANDS:
             return text
-        return self._safe_text(text)
+        return self.text.safe_text(text)
 
     def _plain(self, event, text):
         return event.plain_result(self._output_text(event, text))
@@ -941,22 +880,6 @@ class JmComicPlugin(Star):
                 safe_chain.append(component)
         return event.chain_result(safe_chain)
 
-    def _safe_filename(self, name, max_len=60):
-        """生成安全的文件名：敏感词转拼音并去掉非法字符"""
-        name = self._safe_text(name) or ''
-        # 章节名本身可能带 .zip/.pdf 等后缀，避免生成 .zip.zip / .zip.pdf
-        while True:
-            stripped = re.sub(
-                r"(?i)\.(?:zip|pdf|rar|7z|jpg|jpeg|png|webp|gif|mp4|mkv|epub|txt)$",
-                "",
-                name.strip(),
-            )
-            if stripped == name:
-                break
-            name = stripped
-        for ch in '\\/:*?"<>|\n\r\t':
-            name = name.replace(ch, '_')
-        return name.strip()[:max_len] or 'untitled'
 
     # ========== QQ 消息违规检测 ==========
     def _backend_log_path(self):
@@ -2411,7 +2334,7 @@ class JmComicPlugin(Star):
         offset_in_web_page = (qq_page - 1) % QQ_PAGES_PER_WEB_PAGE * PER_QQ_PAGE
 
         order_name = self.order_map.get(order_by, order_by)
-        display_keyword = self._safe_text(keyword, self.convert_title)
+        display_keyword = self.text.safe_text(keyword, self.convert_title)
         no_result_text = f"没有找到与「{display_keyword}」相关的漫画，请换个关键词试试"
         yield self._plain(event, f"🔍 {title_prefix}{display_keyword}（{order_name}，第{qq_page}页）...")
 
@@ -2480,8 +2403,8 @@ class JmComicPlugin(Star):
             results = []
             for i, (aid, item_title, tags) in enumerate(page_items):
                 global_index = (qq_page - 1) * PER_QQ_PAGE + i + 1
-                item_title = self._safe_text(item_title, self.convert_title)
-                tags = [self._safe_text(t, self.convert_tags) for t in tags]
+                item_title = self.text.safe_text(item_title, self.convert_title)
+                tags = [self.text.safe_text(t, self.convert_tags) for t in tags]
                 safe_tags = tags[:3]
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{global_index}. [JM{aid}] {item_title}{tag_str}")
@@ -2496,7 +2419,7 @@ class JmComicPlugin(Star):
 
             # 下一页提示：保留当前搜索命令和排序参数。
             # 关键词若会被敏感词转换，就不把原词写进命令，避免命令本身触发违规。
-            next_keyword = keyword if self._safe_text(keyword, self.convert_title) == keyword else "<关键词>"
+            next_keyword = keyword if self.text.safe_text(keyword, self.convert_title) == keyword else "<关键词>"
             next_cmd = f"/{command_name} {next_keyword} {qq_page + 1}"
             internal_next_cmd = f"/{command_name} {keyword} {qq_page + 1}"
             if order_by != JmMagicConstants.ORDER_BY_LATEST:
@@ -2621,13 +2544,13 @@ class JmComicPlugin(Star):
             def join_values(values, simplify):
                 if not values:
                     return "无"
-                return ", ".join(self._safe_text(str(v), simplify) for v in values)
+                return ", ".join(self.text.safe_text(str(v), simplify) for v in values)
 
             def display_date(value):
                 text = str(value or "").strip()
                 return "未知" if text in ("", "0", "None") else text
 
-            title = self._safe_text(getattr(album, 'name', ''), self.convert_title) or "未知"
+            title = self.text.safe_text(getattr(album, 'name', ''), self.convert_title) or "未知"
             author_str = join_values(authors, self.convert_author)
             work_str = join_values(works, self.convert_title)
             actor_str = join_values(actors, self.convert_tags)
@@ -2793,7 +2716,7 @@ class JmComicPlugin(Star):
 
             start = (page_num - 1) * page_size
             page_items = chapters[start:start + page_size]
-            album_title = self._safe_text(album.name, self.convert_title)
+            album_title = self.text.safe_text(album.name, self.convert_title)
 
             lines = [
                 f"📚 {album_title}",
@@ -3133,8 +3056,8 @@ class JmComicPlugin(Star):
                     return
 
             album_id, title, tags = random.choice(items)
-            title = self._safe_text(title, self.convert_title)
-            tags = [self._safe_text(t, self.convert_tags) for t in tags]
+            title = self.text.safe_text(title, self.convert_title)
+            tags = [self.text.safe_text(t, self.convert_tags) for t in tags]
             safe_tags = tags[:5]
 
             # 查一下详情，拿章节数和页数
@@ -3699,8 +3622,8 @@ class JmComicPlugin(Star):
             results = []
             for i, (aid, title, tags) in enumerate(page_items):
                 global_index = (qq_page - 1) * PER_QQ_PAGE + i + 1
-                title = self._safe_text(title, self.convert_title)
-                tags = [self._safe_text(t, self.convert_tags) for t in tags]
+                title = self.text.safe_text(title, self.convert_title)
+                tags = [self.text.safe_text(t, self.convert_tags) for t in tags]
                 safe_tags = tags[:3]
                 tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
                 results.append(f"{global_index}. [JM{aid}] {title}{tag_str}")
@@ -3788,7 +3711,7 @@ class JmComicPlugin(Star):
                 if not page_items:
                     lines.append("  （本页无记录）")
                 for offset, item in enumerate(page_items, 1):
-                    title = self._safe_text(item.get('title', ''), self.convert_title)
+                    title = self.text.safe_text(item.get('title', ''), self.convert_title)
                     lines.append(
                         f"  {start + offset}. [JM{item.get('id', '')}] {title[:30]}  "
                         f"({item.get('size_mb', '?')}MB)  {item.get('time', '')}"
@@ -3840,7 +3763,7 @@ class JmComicPlugin(Star):
         page_items = history[start:start + page_size]
         results = []
         for offset, item in enumerate(page_items, 1):
-            title = self._safe_text(item.get('title', ''), self.convert_title)
+            title = self.text.safe_text(item.get('title', ''), self.convert_title)
             results.append(
                 f"{start + offset}. [JM{item.get('id', '')}] {title[:30]}  "
                 f"({item.get('size_mb', '?')}MB)  {item.get('time', '')}"
@@ -3972,16 +3895,16 @@ class JmComicPlugin(Star):
                 """格式化单条评论，回复用 ↳ 单独标记并显示回复对象"""
                 prefix = "  " * indent
                 nickname = getattr(comment, 'nickname', None) or getattr(comment, 'username', None) or '匿名'
-                nickname = self._safe_text(nickname, False)
+                nickname = self.text.safe_text(nickname, False)
                 raw_content = getattr(comment, 'content', '') or ''
-                content = self._safe_text(raw_content.replace('\n', ' ').strip()[:120], self.convert_comment)
+                content = self.text.safe_text(raw_content.replace('\n', ' ').strip()[:120], self.convert_comment)
 
                 reply_to = ""
                 parent_id = getattr(comment, 'parent_comment_id', None)
                 if is_reply:
                     parent_name = id_to_name.get(str(parent_id)) if parent_id is not None else None
                     if parent_name:
-                        parent_name = self._safe_text(parent_name, False)
+                        parent_name = self.text.safe_text(parent_name, False)
                     reply_to = f" 回复 @{parent_name}" if parent_name else " 回复"
 
                 spoiler = " ⚠️剧透" if getattr(comment, 'is_spoiler', False) else ""
@@ -4175,8 +4098,8 @@ class JmComicPlugin(Star):
 
         results = []
         for i, (aid, item_title, tags) in enumerate(items[:limit]):
-            item_title = self._safe_text(item_title, self.convert_title)
-            tags = [self._safe_text(t, self.convert_tags) for t in tags]
+            item_title = self.text.safe_text(item_title, self.convert_title)
+            tags = [self.text.safe_text(t, self.convert_tags) for t in tags]
             safe_tags = tags[:3]
             tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
             results.append(f"{i+1}. [JM{aid}] {item_title}{tag_str}")
@@ -4243,7 +4166,7 @@ class JmComicPlugin(Star):
                 return
 
             export_dir = self.data_dir / "exports"
-            safe_name = self._safe_filename(folder_name or f"收藏夹{folder_id}")
+            safe_name = self.text.safe_filename(folder_name or f"收藏夹{folder_id}")
             output_path = export_dir / f"JM收藏夹_{folder_id}_{safe_name}.csv"
             await asyncio.to_thread(self._write_favorites_csv, output_path, rows)
 
@@ -4331,7 +4254,7 @@ class JmComicPlugin(Star):
                         if not new_photos:
                             continue
 
-                        title = self._safe_text(
+                        title = self.text.safe_text(
                             getattr(album, "name", "") or info.get("title", ""),
                             self.convert_title,
                         ) or f"JM{album_id}"
@@ -4339,7 +4262,7 @@ class JmComicPlugin(Star):
                             f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 话"
                         ]
                         for i, photo in enumerate(new_photos[:10], 1):
-                            chapter_name = self._safe_text(
+                            chapter_name = self.text.safe_text(
                                 getattr(photo, "name", "") or "",
                                 self.convert_title,
                             )
@@ -4349,7 +4272,7 @@ class JmComicPlugin(Star):
                             lines.append(f"  ... 共 {len(new_photos)} 话")
                         lines.append("")
                         lines.append(f"/jmv {album_id} 查看详情")
-                        text = self._safe_text("\n".join(lines))
+                        text = self.text.safe_text("\n".join(lines))
 
                         sent = await self.context.send_message(
                             umo, MessageChain(chain=[Comp.Plain(text)])
@@ -4410,7 +4333,7 @@ class JmComicPlugin(Star):
                 return
             lines = [f"🔔 当前会话订阅（{len(subs)}）："]
             for album_id, info in subs.items():
-                title = self._safe_text(
+                title = self.text.safe_text(
                     (info or {}).get("title", "") or "未知", self.convert_title
                 )
                 count = len((info or {}).get("photo_ids") or [])
@@ -4489,7 +4412,7 @@ class JmComicPlugin(Star):
             data[umo] = subs
             self._save_subscriptions(data)
 
-            title = self._safe_text(
+            title = self.text.safe_text(
                 snapshot["title"] or f"JM{album_id}", self.convert_title
             )
             if self.subscribe_interval > 0:
@@ -4685,7 +4608,7 @@ class JmComicPlugin(Star):
             # 显示文件夹列表
             folder_lines = []
             for fid, fname in folders:
-                fname_cn = self._safe_text(fname, self.convert_title)
+                fname_cn = self.text.safe_text(fname, self.convert_title)
                 folder_lines.append(f"  📁 [ID:{fid}] {fname_cn}")
 
             reply = "⭐ 我的收藏夹文件夹：\n\n" + "\n".join(folder_lines)
