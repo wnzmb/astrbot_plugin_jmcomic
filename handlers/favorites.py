@@ -117,7 +117,7 @@ class FavoritesHandler:
                     if plugin.get('plugin') == 'login':
                         username = plugin.get('kwargs', {}).get('username', '')
                         break
-            except:
+            except Exception:
                 pass
 
             if not username:

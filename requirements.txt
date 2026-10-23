@@ -5,3 +5,4 @@ zhconv>=1.4.3
 img2pdf>=0.5.1
 reportlab>=4.0.0
 PySocks>=1.7.1
+PyYAML>=6.0

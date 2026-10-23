@@ -153,7 +153,7 @@ class SearchService:
             if total_int is not None:
                 range_text += f"，共{total_int}条"
             reply += range_text + "\n\n" + "\n".join(results)
-            reply += f"\n\n/jmv <id> 查详情，/jm <id> 下载"
+            reply += "\n\n/jmv <id> 查详情，/jm <id> 下载"
 
             # 下一页提示：保留当前搜索命令和排序参数。
             # 关键词若会被敏感词转换，就不把原词写进命令，避免命令本身触发违规。

@@ -4,6 +4,13 @@ __pycache__/
 *$py.class
 *.so
 
+# 工具缓存
+.ruff_cache/
+.pytest_cache/
+
+# 本机 AstrBot 运行残留（插件数据实际位于 <astrbot>/data/plugin_data/）
+data/
+
 # 下载文件
 downloads/
 zips/

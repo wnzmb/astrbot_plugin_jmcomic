@@ -117,7 +117,7 @@ class AccountHandler:
                     if plugin.get('plugin') == 'login':
                         username = plugin.get('kwargs', {}).get('username', '')
                         break
-            except:
+            except Exception:
                 pass
 
             if not username:
@@ -153,7 +153,7 @@ class AccountHandler:
             except Exception:
                 pass
 
-            reply = f"👤 用户面板\n\n"
+            reply = "👤 用户面板\n\n"
             reply += f"📛 用户名：{username}\n"
             if hasattr(client, 'get_daily'):
                 streak = info.get('streak')
@@ -164,9 +164,9 @@ class AccountHandler:
                     reply += f"📈 活动进度：{info['progress']}\n"
             reply += f"⭐ 收藏数量：{fav_count}\n"
             if hasattr(client, 'daily_checkin'):
-                reply += f"\n💡 /jmcheckin 立即签到"
+                reply += "\n💡 /jmcheckin 立即签到"
             else:
-                reply += f"\n💡 签到功能需升级 jmcomic 到最新版本"
+                reply += "\n💡 签到功能需升级 jmcomic 到最新版本"
 
             yield self.messaging.plain(event, reply)
 
@@ -188,5 +188,5 @@ class AccountHandler:
         ]
         if not self.settings.owner_ids:
             lines.append("\n⚠️ 尚未配置 owner_ids，账号类命令暂时不可用。")
-            lines.append(f"把上面的ID填入插件配置 owner_ids 即可。")
+            lines.append("把上面的ID填入插件配置 owner_ids 即可。")
         yield self.messaging.plain(event, "\n".join(lines))

@@ -4,7 +4,7 @@
 
 ### ✨ 新增
 - 群白名单 `enabled_groups`：按群号限制插件使用；`allow_group=false` 时所有群禁用，否则再按白名单过滤，私聊不受影响
-- `jms` 纯数字查详情：`numeric_search_as_album` 开启后，`/jms <纯数字>` 直接显示漫画详情，默认关闭
+- `jms` 纯数字查详情：`numeric_search_as_album` 开启后，`/jms <纯数字>` 直接显示漫画详情，默认开启
 - 收藏夹 CSV 导出：`/jmfav export [文件夹id]`，仅号主可用，无加密/无密码；首次输入提示，30 秒内再次输入相同命令才执行
 - 订阅更新推送：唯一入口 `/jmsub`，支持 `/jmsub <漫画id>`、`/jmsub list`、`/jmsub del <漫画id>`；默认每 3600 秒检查一次，用 `photo_id` 快照对比新增话并推送到订阅会话
 - `/jmhis -all [页码]`：管理员可按页查看全部成员下载历史，每个用户每页固定 10 条，页码与 `-all` 可任意顺序
@@ -35,6 +35,9 @@
 - 新增 `subscribe_interval` 配置（0=关闭后台检查）
 - 内部结构重构：`main.py` 从 5103 行拆为 `core/`（配置/客户端/状态/下载器/模型）、`services/`（业务能力）、`handlers/`（命令域）、`ui/`（帮助文案），`main.py` 只保留注册、组装与命令包装；命令名、别名、配置、缓存目录、输出文件名与消息策略均未变
 - 版本保持 `0.7.8`，同步帮助、`metadata.yaml`、README、测试流程和开发文档
+- 配置默认值调整：`pdf_page_limit` 100→200、`numeric_search_as_album` false→true，配置页 hint 同步
+- 敏感词表整理：修正 `肉便器`/`潮吹`/`幼女`/`猿系` 等拼音，日文假名统一改为对应中文拼音，长词优先匹配，补充高风险词并移除低风险词（共 106 条）
+- 依赖补充 `PyYAML`；移除误提交的 AstrBot 运行残留 `data/`，`.ruff_cache/` 等加入 `.gitignore`
 
 ### ✅ 验证
 - `py_compile main.py`、`_conf_schema.json` JSON 校验通过
@@ -43,6 +46,8 @@
 - 新增 BUG-006～012 测试：每个 PDF 分册信息页、统一命名、`jmv`/`jmlist` 格式、`jmhis -all` 分页与 0 条显示、缓存目录迁移、ZIP 单话目录、`per_page` 分页
 - 新增 BUG-014 封面回归测试：`jmv` 封面转为 PDF 后使用 `Comp.File`，文件名为 `JM{id}_封面.pdf`，发送后临时文件清理
 - 新增 BUG-013 测试：章节行页数/页数未知、`/jmnow` 无任务与进度、`/jmnext` 翻页会话与超时、`progress_step` 已移除、消息压缩后不再发送逐章/打包/收尾冗余消息
+- 新增 `/jmnow -all`、`/jmstop -all` 管理员分支测试：非管理员拦截、全部任务汇总、最多展示 20 个用户
+- 新增敏感词测试：长词优先、繁简双写、日文假名转拼音、自定义词表增删；`ruff check` 与 `compileall` 通过
 
 ## v0.7.7 - 2026-10-21
 

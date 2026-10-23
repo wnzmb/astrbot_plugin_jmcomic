@@ -68,7 +68,7 @@ class JmClientManager:
     def handle_exception(self, e: Exception, action: str = "操作") -> str:
         """把 jmcomic 异常转换为用户友好的提示"""
         if isinstance(e, MissingAlbumPhotoException):
-            return f"❌ 查无此本/话，请检查 ID 是否正确"
+            return "❌ 查无此本/话，请检查 ID 是否正确"
         elif isinstance(e, RequestRetryAllFailException):
             return (
                 "❌ 网络请求全部失败，可尝试在插件配置中更换域名；"
@@ -76,9 +76,9 @@ class JmClientManager:
                 f"{e}"
             )
         elif isinstance(e, PartialDownloadFailedException):
-            return f"⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
+            return "⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
         elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
-            return f"⏹️ 下载已取消"
+            return "⏹️ 下载已取消"
         else:
             logger.error(f"{action}失败: {e}", exc_info=True)
             return f"❌ {action}失败：{e}"
