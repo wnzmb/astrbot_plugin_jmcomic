@@ -31,23 +31,11 @@ from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
 from .services.messaging import MessagingService
+from .services.pagination import PageEventProxy, PageSessionService
 from .services.history import HistoryService
 from .services.progress import ActiveDownloadService
 from .services.quota import FileQuotaService
 from .services.text import TextService
-
-class PageEventProxy:
-    """给 /jmnext 复用一个新命令字符串，其余事件能力仍委托原事件。"""
-
-    def __init__(self, event, message_str):
-        object.__setattr__(self, "_event", event)
-        object.__setattr__(self, "message_str", message_str)
-
-    def get_message_str(self):
-        return self.message_str
-
-    def __getattr__(self, name):
-        return getattr(self._event, name)
 
 @register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.8")
 class JmComicPlugin(Star):
@@ -105,6 +93,7 @@ class JmComicPlugin(Star):
 
         self.state = PluginState()
         self.access = AccessService(self.settings)
+        self.pagination = PageSessionService(self.settings, self.state)
         self.text = TextService(self.settings)
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
@@ -628,50 +617,6 @@ class JmComicPlugin(Star):
 
 
 
-    @staticmethod
-    def _page_session_key(event):
-        umo = getattr(event, "unified_msg_origin", "") or ""
-        return (str(umo), str(event.get_sender_id()))
-
-    def _remember_page(self, event, next_command, page, total_pages=None):
-        if self.page_turn_timeout <= 0 or not next_command:
-            return
-        if total_pages is not None and page >= int(total_pages):
-            self.state.page_sessions.pop(self._page_session_key(event), None)
-            return
-        self.state.page_sessions[self._page_session_key(event)] = {
-            "next_command": next_command,
-            "page": int(page),
-            "total_pages": int(total_pages) if total_pages is not None else None,
-            "expires_at": time.monotonic() + self.page_turn_timeout,
-        }
-
-    def _page_session(self, event):
-        key = self._page_session_key(event)
-        session = self.state.page_sessions.get(key)
-        if not session:
-            return None
-        if time.monotonic() > session.get("expires_at", 0):
-            self.state.page_sessions.pop(key, None)
-            return None
-        return session
-
-    def _clear_page_session(self, event):
-        self.state.page_sessions.pop(self._page_session_key(event), None)
-
-    @staticmethod
-    def _page_handler_name(command):
-        return {
-            "jmlist": "jm_chapter_list",
-            "jmhis": "jm_history",
-            "jmc": "jm_comments",
-            "jmrank": "jm_ranking",
-            "jms": "jm_search",
-            "jma": "jm_search_author",
-            "jmt": "jm_search_tag",
-            "jmr": "jm_search_actor",
-            "jmw": "jm_search_work",
-        }.get(command)
 
     # ========== 工具方法 ==========
 
@@ -2050,7 +1995,7 @@ class JmComicPlugin(Star):
 
     async def _render_search_page(self, event, client, search_method, keyword, qq_page, order_by, title_prefix="", command_name="jms"):
         """通用搜索结果渲染：分页 + 切片 + 输出"""
-        self._clear_page_session(event)
+        self.pagination.clear(event)
         PER_QQ_PAGE = self.per_page
         PER_WEB_PAGE = 80
         QQ_PAGES_PER_WEB_PAGE = PER_WEB_PAGE // PER_QQ_PAGE
@@ -2105,20 +2050,20 @@ class JmComicPlugin(Star):
                 except (TypeError, ValueError):
                     total_int = None
             if total_int is not None and total_int <= 0:
-                self.state.page_sessions.pop(self._page_session_key(event), None)
+                self.pagination.clear(event)
                 yield self.messaging.plain(event, no_result_text)
                 return
             if total_int is not None:
                 max_page = math.ceil(total_int / PER_QQ_PAGE)
                 if qq_page > max_page:
-                    self.state.page_sessions.pop(self._page_session_key(event), None)
+                    self.pagination.clear(event)
                     yield self.messaging.plain(event,
                         f"第{qq_page}页没有更多结果了（共{total_int}条，最多{max_page}页）"
                     )
                     return
 
             if not page_items:
-                self.state.page_sessions.pop(self._page_session_key(event), None)
+                self.pagination.clear(event)
                 if total_int is not None:
                     yield self.messaging.plain(event, f"第{qq_page}页没有更多结果了")
                 else:
@@ -2157,7 +2102,7 @@ class JmComicPlugin(Star):
                 if total_int is not None
                 else None
             )
-            self._remember_page(
+            self.pagination.remember(
                 event, internal_next_cmd, qq_page, max_page
             )
             yield self.messaging.plain(event, reply)
@@ -2369,7 +2314,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        self._clear_page_session(event)
+        self.pagination.clear(event)
 
         args = event.message_str.split()
         if len(args) < 2:
@@ -2484,7 +2429,7 @@ class JmComicPlugin(Star):
                 return
 
             if page_num < total_pages:
-                self._remember_page(
+                self.pagination.remember(
                     event,
                     f"/jmlist {album_id} {page_num + 1}",
                     page_num,
@@ -2686,7 +2631,7 @@ class JmComicPlugin(Star):
         if not parts:
             return
         command = parts[0].lstrip("/").lower()
-        handler_name = self._page_handler_name(command)
+        handler_name = self.pagination.page_handler_name(command)
         handler = getattr(self, handler_name, None) if handler_name else None
         if handler is None:
             return
@@ -2700,7 +2645,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        session = self._page_session(event)
+        session = self.pagination.get(event)
         if session is None:
             yield self.messaging.plain(
                 event,
@@ -2708,7 +2653,7 @@ class JmComicPlugin(Star):
                 "/jmc、/jmrank 或搜索命令。",
             )
             return
-        self.state.page_sessions.pop(self._page_session_key(event), None)
+        self.pagination.clear(event)
         async for message in self._follow_page_session(event, session):
             yield message
 
@@ -2717,10 +2662,10 @@ class JmComicPlugin(Star):
         """在有效期内发送“下一页/下页”自动翻页；无会话时静默。"""
         if not self.access.check_permission(event):
             return
-        session = self._page_session(event)
+        session = self.pagination.get(event)
         if session is None:
             return
-        self.state.page_sessions.pop(self._page_session_key(event), None)
+        self.pagination.clear(event)
         async for message in self._follow_page_session(event, session):
             yield message
 
@@ -3286,7 +3231,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        self._clear_page_session(event)
+        self.pagination.clear(event)
         args = event.message_str.split()
         if len(args) < 2:
             yield self.messaging.plain(event,
@@ -3339,7 +3284,7 @@ class JmComicPlugin(Star):
             page_items = all_items[start:end]
 
             if not page_items:
-                self.state.page_sessions.pop(self._page_session_key(event), None)
+                self.pagination.clear(event)
                 yield self.messaging.plain(event, "没有更多了")
                 return
 
@@ -3354,7 +3299,7 @@ class JmComicPlugin(Star):
 
             reply = f"🏆 {rank_name}（第{qq_page}页）\n\n" + "\n".join(results)
             reply += f"\n\n下一页：/jmrank {rank_type} {qq_page + 1}"
-            self._remember_page(
+            self.pagination.remember(
                 event, f"/jmrank {rank_type} {qq_page + 1}", qq_page, None
             )
             yield self.messaging.plain(event, reply)
@@ -3369,7 +3314,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        self._clear_page_session(event)
+        self.pagination.clear(event)
         args = event.message_str.split()
         user_id = event.get_sender_id()
 
@@ -3454,7 +3399,7 @@ class JmComicPlugin(Star):
             if nav:
                 reply += "\n\n" + "\n".join(nav)
             if page_num < total_pages:
-                self._remember_page(
+                self.pagination.remember(
                     event, f"/jmhis -all {page_num + 1}", page_num, total_pages
                 )
             yield self.messaging.plain(event, reply)
@@ -3503,7 +3448,7 @@ class JmComicPlugin(Star):
             reply += f"\n上一页：/jmhis {page_num - 1}"
         reply += "\n\n/jmhis clear 清空历史"
         if page_num < total_pages:
-            self._remember_page(
+            self.pagination.remember(
                 event, f"/jmhis {page_num + 1}", page_num, total_pages
             )
         yield self.messaging.plain(event, reply)
@@ -3517,7 +3462,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        self._clear_page_session(event)
+        self.pagination.clear(event)
         args = event.message_str.split()
         if len(args) < 2:
             yield self.messaging.plain(event, "用法：/jmc <漫画id> [页码]\n示例：/jmc 123456 或 /jmc 123456 2")
@@ -3669,7 +3614,7 @@ class JmComicPlugin(Star):
             # 下一页提示
             if page_count is None or page_num < page_count:
                 reply += f"\n\n下一页：/jmc {album_id} {page_num + 1}"
-                self._remember_page(
+                self.pagination.remember(
                     event,
                     f"/jmc {album_id} {page_num + 1}",
                     page_num,
