@@ -7,6 +7,7 @@ import time
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
+from ..core.downloader import ProgressDownloader
 from ..core.parsing import format_index_ranges
 
 
@@ -146,6 +147,24 @@ class DownloadRunner:
                 or (target_id if kind == "album" else "")
             )
             album_title = getattr(album, "name", "") if album is not None else ""
+
+            # -c/-latest 选中的章节来自 album 列表，列表对象没有 page_arr，
+            # 先补真实页数，否则 selected_total 和 done_pages 会恒为 0。
+            if selected and kind == "album" and chapter_expr and album_id:
+                try:
+                    unique_photos = []
+                    seen_photo_ids = set()
+                    for _index, photo, _range in selected:
+                        photo_id = str(getattr(photo, "photo_id", "") or "")
+                        if photo_id and photo_id not in seen_photo_ids:
+                            seen_photo_ids.add(photo_id)
+                            unique_photos.append(photo)
+                    await self.catalog.enrich_chapter_pages(
+                        client, album_id, unique_photos
+                    )
+                except Exception as e:
+                    logger.warning(f"补齐选中话页数失败，进度可能不完整: {e}")
+
             selected_total = sum(
                 self.catalog.photo_range_pages(photo, page_range)
                 for _index, photo, page_range in selected
@@ -155,6 +174,10 @@ class DownloadRunner:
                     selected_total = max(0, int(getattr(album, "page_count", 0) or 0))
                 except (TypeError, ValueError):
                     selected_total = 0
+            # 选章/单章不走整本 ProgressDownloader；清掉同一 album 上一次整本
+            # 下载留下的旧进度，避免 /jmnow 取 max 时显示整本总页数。
+            if not (kind == "album" and not chapter_expr):
+                ProgressDownloader._progress.pop(str(album_id or target_id), None)
             self.progress.update(
                 user_id,
                 album_id=album_id or target_id,

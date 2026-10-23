@@ -121,6 +121,11 @@ class DownloadService:
         expected = len(getattr(photo, "page_arr", None) or [])
         if expected <= 0:
             try:
+                expected = int(getattr(photo, "page_count", 0) or 0)
+            except (TypeError, ValueError):
+                expected = 0
+        if expected <= 0:
+            try:
                 detail = await asyncio.to_thread(
                     self.client.get_client().get_photo_detail,
                     photo.photo_id,
@@ -135,7 +140,6 @@ class DownloadService:
                     photo.name = detail.name
             except Exception as e:
                 logger.warning(f"校验章节页数失败，按已有缓存继续: {e}")
-                expected = 0
         if expected <= 0:
             try:
                 expected = int(self.cache.read_metadata(folder).get("page_count") or 0)

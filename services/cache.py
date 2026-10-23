@@ -319,6 +319,11 @@ class CacheService:
             expected = 0
         if expected <= 0:
             try:
+                expected = int(getattr(photo, "page_count", 0) or 0)
+            except (TypeError, ValueError):
+                expected = 0
+        if expected <= 0:
+            try:
                 expected = int(self.read_metadata(folder).get("page_count") or 0)
             except (TypeError, ValueError):
                 expected = 0
