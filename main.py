@@ -29,6 +29,7 @@ from .core.state import PluginState
 from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
+from .services.access import AccessService
 
 
 class PageEventProxy:
@@ -100,6 +101,7 @@ class JmComicPlugin(Star):
         self.order_map = settings.order_map
 
         self.state = PluginState()
+        self.access = AccessService(self.settings)
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self.client = JmClientManager(self.settings)
@@ -108,43 +110,6 @@ class JmComicPlugin(Star):
             f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
             f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
-
-    def _check_permission(self, event: AstrMessageEvent):
-        """检查群聊权限：allow_group 总开关 + enabled_groups 白名单"""
-        group_id = event.get_group_id()
-        if not group_id:
-            # 私聊不受群开关和白名单影响
-            return True
-        if not self.allow_group:
-            return False
-        if self.enabled_groups and str(group_id) not in self.enabled_groups:
-            return False
-        return True
-
-    def _permission_denied_text(self, event: AstrMessageEvent) -> str:
-        group_id = event.get_group_id()
-        if group_id and not self.allow_group:
-            return "本插件已关闭群聊使用，请私聊使用"
-        return (
-            "本群不在插件群白名单中，请私聊使用，"
-            "或让管理员把本群号加入 enabled_groups"
-        )
-
-    # ========== 号主与文件发送限额 ==========
-    def _is_owner(self, event: AstrMessageEvent) -> bool:
-        """方案B：只有配置在 owner_ids 里的发送者才能使用账号类命令"""
-        if not self.owner_ids:
-            return False
-        return str(event.get_sender_id()) in self.owner_ids
-
-    def _owner_required_text(self) -> str:
-        if not self.owner_ids:
-            return (
-                "⚠️ 账号类命令仅限 JM 账号号主使用。\n"
-                "请先在插件配置里填写 owner_ids（号主ID），"
-                "发送 /jmwhoami 可查看你的ID。"
-            )
-        return "⚠️ 账号类命令仅限 JM 账号号主使用。"
 
     def _load_send_times(self):
         try:
@@ -2565,8 +2530,8 @@ class JmComicPlugin(Star):
           -pic     不发送封面
         示例：/jmv 123456 -role -work
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -2754,8 +2719,8 @@ class JmComicPlugin(Star):
         """查看漫画话列表，用法：/jmlist <漫画id> [页码]
         只发送话文本，不发送封面；封面请用 /jmv <漫画id> 查看
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         self._clear_page_session(event)
 
@@ -2886,8 +2851,8 @@ class JmComicPlugin(Star):
     @filter.command("jm", alias={"jmphoto"})
     async def jm_download(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 PDF，用法：/jm <id> [-c 章节]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
 
@@ -3016,8 +2981,8 @@ class JmComicPlugin(Star):
     @filter.command("jmstop")
     async def jm_stop(self, event: AstrMessageEvent):
         """停止当前用户正在进行的下载"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         user_id = str(event.get_sender_id())
         tasks = [
@@ -3035,8 +3000,8 @@ class JmComicPlugin(Star):
     @filter.command("jmnow")
     async def jm_now(self, event: AstrMessageEvent):
         """查看当前用户正在进行的下载进度"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         state = self._active_download(event.get_sender_id())
         if not state:
@@ -3085,8 +3050,8 @@ class JmComicPlugin(Star):
     @filter.command("jmnext")
     async def jm_next(self, event: AstrMessageEvent):
         """翻到最近一次列表的下一页"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         session = self._page_session(event)
         if session is None:
@@ -3103,7 +3068,7 @@ class JmComicPlugin(Star):
     @filter.regex(r"^(?:下一页|下页)$")
     async def jm_next_keyword(self, event: AstrMessageEvent):
         """在有效期内发送“下一页/下页”自动翻页；无会话时静默。"""
-        if not self._check_permission(event):
+        if not self.access.check_permission(event):
             return
         session = self._page_session(event)
         if session is None:
@@ -3118,8 +3083,8 @@ class JmComicPlugin(Star):
         """随机抽一个漫画，用法：/jmrand [标签名]
         不填标签就从日榜随机，填了就从指定标签里随机
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         tag_name = " ".join(args[1:]) if len(args) > 1 else None
@@ -3194,8 +3159,8 @@ class JmComicPlugin(Star):
     @filter.command("jms")
     async def jm_search(self, event: AstrMessageEvent):
         """全站搜索，用法：/jms <关键词> [页码] [排序]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3229,8 +3194,8 @@ class JmComicPlugin(Star):
     @filter.command("jma")
     async def jm_search_author(self, event: AstrMessageEvent):
         """按作者搜索，用法：/jma <作者名> [页码] [排序]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3253,8 +3218,8 @@ class JmComicPlugin(Star):
     @filter.command("jmt")
     async def jm_search_tag(self, event: AstrMessageEvent):
         """按标签搜索，用法：/jmt <标签名> [页码] [排序]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3277,8 +3242,8 @@ class JmComicPlugin(Star):
     @filter.command("jmr")
     async def jm_search_actor(self, event: AstrMessageEvent):
         """按角色/演员搜索，用法：/jmr <角色名> [页码] [排序]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3301,8 +3266,8 @@ class JmComicPlugin(Star):
     @filter.command("jmw")
     async def jm_search_work(self, event: AstrMessageEvent):
         """按原作搜索，用法：/jmw <原作名> [页码] [排序]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3325,8 +3290,8 @@ class JmComicPlugin(Star):
     @filter.command("jmzip")
     async def jm_download_zip(self, event: AstrMessageEvent):
         """下载漫画/章节并发送 ZIP，用法：/jmzip <id> [-c 章节]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3509,11 +3474,11 @@ class JmComicPlugin(Star):
     @filter.command("jmcheckin")
     async def jm_checkin(self, event: AstrMessageEvent):
         """每日签到领金币经验，用法：/jmcheckin"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
-        if not self._is_owner(event):
-            yield self._plain(event, self._owner_required_text())
+        if not self.access.is_owner(event):
+            yield self._plain(event, self.access.owner_required_text())
             return
         try:
             client = self.client.get_client()
@@ -3595,11 +3560,11 @@ class JmComicPlugin(Star):
     @filter.command("jmme")
     async def jm_user_info(self, event: AstrMessageEvent):
         """查看用户信息面板，用法：/jmme"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
-        if not self._is_owner(event):
-            yield self._plain(event, self._owner_required_text())
+        if not self.access.is_owner(event):
+            yield self._plain(event, self.access.owner_required_text())
             return
         try:
             client = self.client.get_client()
@@ -3671,8 +3636,8 @@ class JmComicPlugin(Star):
     @filter.command("jmrank")
     async def jm_ranking(self, event: AstrMessageEvent):
         """排行榜，用法：/jmrank day|week|month [页码]"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         self._clear_page_session(event)
         args = event.message_str.split()
@@ -3754,8 +3719,8 @@ class JmComicPlugin(Star):
     @filter.command("jmhis")
     async def jm_history(self, event: AstrMessageEvent):
         """查看下载历史，用法：/jmhis 或 /jmhis clear 清空历史"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         self._clear_page_session(event)
         args = event.message_str.split()
@@ -3902,8 +3867,8 @@ class JmComicPlugin(Star):
         """查看评论，用法：/jmc <id> [页码]
         支持翻页，展示回复楼、剧透标记、点赞数
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         self._clear_page_session(event)
         args = event.message_str.split()
@@ -4073,12 +4038,12 @@ class JmComicPlugin(Star):
     @filter.command("jmwhoami")
     async def jm_whoami(self, event: AstrMessageEvent):
         """查看自己的发送者ID，用于配置 owner_ids"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         sender_id = str(event.get_sender_id())
         is_admin = event.is_admin() if hasattr(event, 'is_admin') else getattr(event, 'role', '') == 'admin'
-        is_owner = self._is_owner(event)
+        is_owner = self.access.is_owner(event)
         lines = [
             f"🆔 你的发送者ID：{sender_id}",
             f"👑 AstrBot管理员：{'是' if is_admin else '否'}",
@@ -4093,8 +4058,8 @@ class JmComicPlugin(Star):
     @filter.command("jmdomain")
     async def jm_domain(self, event: AstrMessageEvent):
         """查看 API 与 HTML 两套可用域名"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         yield self._plain(event, "🌐 正在获取可用域名...")
         try:
@@ -4168,8 +4133,8 @@ class JmComicPlugin(Star):
     @filter.command("jmupdate")
     async def jm_changelog(self, event: AstrMessageEvent):
         """查看插件更新日志"""
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         changelog_path = Path(__file__).parent / "CHANGELOG.md"
         if not changelog_path.exists():
@@ -4425,8 +4390,8 @@ class JmComicPlugin(Star):
         /jmsub list → 查看当前会话订阅
         /jmsub del <漫画id> → 取消订阅
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
         args = event.message_str.split()
         umo = event.unified_msg_origin
@@ -4553,11 +4518,11 @@ class JmComicPlugin(Star):
         /jmfav del <漫画id> → 从收藏夹移除
         /jmfav export [文件夹id] → 导出收藏夹 CSV（30 秒内二次确认）
         """
-        if not self._check_permission(event):
-            yield self._plain(event, self._permission_denied_text(event))
+        if not self.access.check_permission(event):
+            yield self._plain(event, self.access.permission_denied_text(event))
             return
-        if not self._is_owner(event):
-            yield self._plain(event, self._owner_required_text())
+        if not self.access.is_owner(event):
+            yield self._plain(event, self.access.owner_required_text())
             return
         args = event.message_str.split()
 
