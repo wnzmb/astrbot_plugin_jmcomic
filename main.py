@@ -1,8 +1,6 @@
 import os
 import asyncio
 import zipfile
-import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +14,11 @@ from .core.state import PluginState
 from .handlers.account import AccountHandler
 from .handlers.album import AlbumHandler
 from .handlers.download import DownloadHandler
+from .handlers.favorites import FavoritesHandler
 from .handlers.library import LibraryHandler
 from .handlers.navigation import NavigationHandler
 from .handlers.search import SearchHandler
+from .handlers.subscribe import SubscribeHandler
 from .handlers.system import SystemHandler
 from .services.access import AccessService
 from .services.cache import CacheService
@@ -141,6 +141,14 @@ class JmComicPlugin(Star):
             self.settings, self.access, self.client, self.history,
             self.pagination, self.messaging, self.text, self.catalog,
             self.selection, self.state,
+        )
+        self.subscribe = SubscribeHandler(
+            self.settings, self.access, self.client, self.catalog,
+            self.selection, self.subscriptions, self.text, self.messaging,
+        )
+        self.favorites_handler = FavoritesHandler(
+            self.settings, self.access, self.client, self.selection,
+            self.favorites, self.text, self.state, self.messaging,
         )
         self.system = SystemHandler(
             self.settings, self.access, self.client, self.messaging,
@@ -331,318 +339,18 @@ class JmComicPlugin(Star):
             yield message
 
     # ========== /jmsub 订阅更新 ==========
-
     @filter.command("jmsub")
     async def jm_subscribe(self, event: AstrMessageEvent):
-        """订阅漫画更新，用法：
-        /jmsub <漫画id> → 订阅/更新基线
-        /jmsub list → 查看当前会话订阅
-        /jmsub del <漫画id> → 取消订阅
-        """
-        if not self.access.check_permission(event):
-            yield self.messaging.plain(event, self.access.permission_denied_text(event))
-            return
-        args = event.message_str.split()
-        umo = event.unified_msg_origin
-        data = self.subscriptions.load()
-        subs = data.get(umo)
-        if not isinstance(subs, dict):
-            subs = {}
+        """订阅漫画更新，用法：/jmsub <漫画id> | list | del <漫画id>"""
+        async for message in self.subscribe.handle(event):
+            yield message
 
-        action = args[1].lower() if len(args) >= 2 else "list"
-        if action in ("list", "ls"):
-            if not subs:
-                yield self.messaging.plain(event,
-                    "当前会话还没有订阅。\n"
-                    "用法：/jmsub <漫画id> 订阅更新"
-                )
-                return
-            lines = [f"🔔 当前会话订阅（{len(subs)}）："]
-            for album_id, info in subs.items():
-                title = self.text.safe_text(
-                    (info or {}).get("title", "") or "未知", self.convert_title
-                )
-                count = len((info or {}).get("photo_ids") or [])
-                lines.append(f"  JM{album_id} {title}（{count}话）")
-            lines.append("")
-            lines.append("💡 /jmsub <漫画id> 更新基线，/jmsub del <漫画id> 取消")
-            yield self.messaging.plain(event, "\n".join(lines))
-            return
-
-        if action in ("del", "remove", "unsub"):
-            if len(args) != 3:
-                yield self.messaging.plain(event, "用法：/jmsub del <漫画id>")
-                return
-            _, album_id = self.selection.normalize_target(args[2])
-            if not album_id.isdigit() or int(album_id) <= 0:
-                yield self.messaging.plain(event, f"❌ 漫画ID必须是大于 0 的数字：{args[2]}")
-                return
-            if album_id not in subs:
-                yield self.messaging.plain(event, f"ℹ️ 当前会话没有订阅 JM{album_id}")
-                return
-            subs.pop(album_id, None)
-            if subs:
-                data[umo] = subs
-            else:
-                data.pop(umo, None)
-            self.subscriptions.save(data)
-            yield self.messaging.plain(event, f"✅ 已取消订阅 JM{album_id}")
-            return
-
-        if len(args) != 2:
-            yield self.messaging.plain(event,
-                "用法：\n"
-                "  /jmsub <漫画id>        订阅更新\n"
-                "  /jmsub list            查看当前会话订阅\n"
-                "  /jmsub del <漫画id>    取消订阅"
-            )
-            return
-
-        prefix, album_id = self.selection.normalize_target(args[1])
-        if prefix == "p" or not album_id.isdigit() or int(album_id) <= 0:
-            yield self.messaging.plain(event,
-                f"❌ 漫画ID必须是大于 0 的数字：{args[1]}\n"
-                "章节ID不能订阅，请填所属漫画ID"
-            )
-            return
-
-        yield self.messaging.plain(event, f"🔔 正在读取 JM{album_id} 的话信息...")
-        try:
-            client = await asyncio.to_thread(self.client.get_client)
-            album = await asyncio.to_thread(client.get_album_detail, album_id)
-            if self.catalog.looks_like_chapter_album(album):
-                parent_id = await self.catalog.resolve_chapter_album_parent(
-                    client, album, album_id
-                )
-                if parent_id:
-                    yield self.messaging.plain(event,
-                        f"❌ JM{album_id} 是章节ID，不能订阅。\n"
-                        f"所属漫画：JM{parent_id}\n"
-                        f"请用 /jmsub {parent_id} 订阅整本更新。"
-                    )
-                else:
-                    yield self.messaging.plain(event,
-                        f"❌ JM{album_id} 是章节ID，不能订阅。请改用所属漫画ID。"
-                    )
-                return
-
-            snapshot = self.subscriptions.snapshot(album)
-            if not snapshot["photo_ids"]:
-                yield self.messaging.plain(event,
-                    f"⚠️ JM{album_id} 没有话列表，暂时无法订阅"
-                )
-                return
-
-            existed = album_id in subs
-            subs[album_id] = snapshot
-            data[umo] = subs
-            self.subscriptions.save(data)
-
-            title = self.text.safe_text(
-                snapshot["title"] or f"JM{album_id}", self.convert_title
-            )
-            if self.subscribe_interval > 0:
-                interval_text = (
-                    f"每 {self.subscribe_interval} 秒检查一次"
-                    if self.subscribe_interval < 3600
-                    else f"每 {self.subscribe_interval // 3600} 小时检查一次"
-                )
-                hint = f"后台会{interval_text}，发现新话后推送到当前会话。"
-            else:
-                hint = "后台自动检查已关闭（subscribe_interval=0），当前只保存订阅，不会推送。"
-            yield self.messaging.plain(event,
-                f"{'🔄 已更新订阅基线' if existed else '✅ 已订阅'}："
-                f"《{title}》JM{album_id}\n"
-                f"当前 {len(snapshot['photo_ids'])} 话。{hint}"
-            )
-        except Exception as e:
-            yield self.messaging.plain(event, self.client.handle_exception(e, "订阅"))
-
+    # ========== /jmfav 收藏夹 ==========
     @filter.command("jmfav")
     async def jm_favorite(self, event: AstrMessageEvent):
-        """收藏夹功能：
-        /jmfav → 查看收藏夹文件夹列表
-        /jmfav <文件夹id> → 查看文件夹里的内容
-        /jmfav add <漫画id> → 把漫画加入收藏夹
-        /jmfav del <漫画id> → 从收藏夹移除
-        /jmfav export [文件夹id] → 导出收藏夹 CSV（30 秒内二次确认）
-        """
-        if not self.access.check_permission(event):
-            yield self.messaging.plain(event, self.access.permission_denied_text(event))
-            return
-        if not self.access.is_owner(event):
-            yield self.messaging.plain(event, self.access.owner_required_text())
-            return
-        args = event.message_str.split()
-
-        operation = args[1].lower() if len(args) >= 2 else ""
-        if operation in ("add", "del"):
-            if len(args) != 3:
-                yield self.messaging.plain(event,
-                    f"用法：/jmfav {operation} <漫画id>\n"
-                    "示例：/jmfav add 123456"
-                )
-                return
-            _, album_id = self.selection.normalize_target(args[2])
-            if not album_id.isdigit() or int(album_id) <= 0:
-                yield self.messaging.plain(event, f"❌ 漫画ID必须是大于 0 的数字：{args[2]}")
-                return
-        elif operation == "export":
-            if len(args) > 3:
-                yield self.messaging.plain(event,
-                    "用法：/jmfav export [文件夹id]\n"
-                    "不带文件夹id时导出“全部”收藏"
-                )
-                return
-            folder_id = "0"
-            if len(args) == 3:
-                token = args[2]
-                if not re.fullmatch(r"\d+", token):
-                    yield self.messaging.plain(event, f"❌ 文件夹ID必须是数字：{token}")
-                    return
-                folder_id = str(int(token))
-
-            # 二次确认：首次输入只提示，30 秒内再次输入相同命令才真正导出
-            user_key = (str(event.get_sender_id()), event.unified_msg_origin)
-            action_key = f"export:{folder_id}"
-            key = (*user_key, action_key)
-            now = time.monotonic()
-            self.state.pending_exports = {
-                k: v for k, v in self.state.pending_exports.items()
-                if now - v <= 30
-                and not (
-                    k[0] == user_key[0]
-                    and k[1] == user_key[1]
-                    and k[2] != action_key
-                )
-            }
-            command_text = "/jmfav export"
-            if len(args) == 3:
-                command_text += f" {args[2]}"
-            if key not in self.state.pending_exports:
-                self.state.pending_exports[key] = now
-                yield self.messaging.plain(event,
-                    f"⚠️ 即将导出收藏夹 [ID:{folder_id}] 为 CSV 文件。\n"
-                    "导出会把账号收藏数据写入文件并发送到当前会话，请确认不是误触。\n"
-                    f"请在 30 秒内再次输入完全相同的命令确认：\n{command_text}"
-                )
-                return
-            self.state.pending_exports.pop(key, None)
-            async for item in self.favorites.export(event, folder_id):
-                yield item
-            return
-        elif len(args) >= 2:
-            if len(args) > 2:
-                yield self.messaging.plain(event, "用法：/jmfav [文件夹id]\n文件夹ID只能填一个")
-                return
-            folder_token = args[1]
-            if not re.fullmatch(r"\d+", folder_token):
-                yield self.messaging.plain(event,
-                    f"❌ 无法识别的收藏夹参数：{folder_token}\n"
-                    "用法：/jmfav | /jmfav <文件夹id> | /jmfav add <漫画id> | "
-                    "/jmfav del <漫画id> | /jmfav export [文件夹id]"
-                )
-                return
-            if int(folder_token) < 0:
-                yield self.messaging.plain(event, "❌ 文件夹ID不能是负数")
-                return
-
-        try:
-            client = self.client.get_client()
-
-            # 从配置里读登录的用户名
-            username = ""
-            try:
-                for plugin in self.option.plugins.after_init:
-                    if plugin.get('plugin') == 'login':
-                        username = plugin.get('kwargs', {}).get('username', '')
-                        break
-            except:
-                pass
-
-            if not username:
-                yield self.messaging.plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
-                return
-
-            # /jmfav add <id> — 添加收藏（仅API客户端支持）
-            if len(args) >= 3 and args[1].lower() == 'add':
-                if self.client_type != 'api':
-                    yield self.messaging.plain(event, "⚠️ 添加收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
-                    return
-                _, album_id = self.selection.normalize_target(args[2])
-                yield self.messaging.plain(event, f"⭐ 正在检查 JM{album_id} 的收藏状态...")
-                is_fav, _album = await self.favorites.favorite_state(client, album_id)
-                if is_fav:
-                    yield self.messaging.plain(event, f"ℹ️ JM{album_id} 已经在收藏夹里了")
-                else:
-                    await asyncio.to_thread(client.add_favorite_album, album_id, folder_id='0')
-                    self.favorites.clear_client_cache(client)
-                    yield self.messaging.plain(event, f"✅ 已收藏 JM{album_id}")
-                try:
-                    yield self.messaging.plain(event, await self.favorites.render_favorites(client, '0'))
-                except Exception as list_err:
-                    logger.warning(f"刷新收藏夹失败: {list_err}")
-                return
-
-            # /jmfav del <id> — 删除收藏（仅API客户端支持，且需jmcomic较新版本）
-            if len(args) >= 3 and args[1].lower() == 'del':
-                if self.client_type != 'api':
-                    yield self.messaging.plain(event, "⚠️ 移除收藏仅支持 API 客户端，请在插件配置中将客户端类型改为 api")
-                    return
-                if not hasattr(client, 'delete_favorite_album'):
-                    yield self.messaging.plain(event, "⚠️ 当前 jmcomic 版本不支持移除收藏，请升级 jmcomic 到最新版本")
-                    return
-                _, album_id = self.selection.normalize_target(args[2])
-                yield self.messaging.plain(event, f"🗑️ 正在检查 JM{album_id} 的收藏状态...")
-                is_fav, _album = await self.favorites.favorite_state(client, album_id)
-                if not is_fav:
-                    yield self.messaging.plain(event, f"ℹ️ JM{album_id} 本来就不在收藏夹里，无需移除")
-                else:
-                    await asyncio.to_thread(client.delete_favorite_album, album_id, folder_id='0')
-                    self.favorites.clear_client_cache(client)
-                    yield self.messaging.plain(event, f"✅ 已移除收藏 JM{album_id}")
-                try:
-                    yield self.messaging.plain(event, await self.favorites.render_favorites(client, '0'))
-                except Exception as list_err:
-                    logger.warning(f"刷新收藏夹失败: {list_err}")
-                return
-
-            # /jmfav <folder_id> — 查看指定文件夹内容
-            if len(args) >= 2 and args[1].isdigit():
-                folder_id = args[1]
-                yield self.messaging.plain(event, f"⭐ 获取收藏夹 [ID:{folder_id}] 的内容...")
-                yield self.messaging.plain(event,
-                    await self.favorites.render_favorites(
-                        client, folder_id, f"⭐ 收藏夹 [ID:{folder_id}]", 20
-                    )
-                )
-                return
-
-            # /jmfav — 列出收藏夹文件夹
-            yield self.messaging.plain(event, "⭐ 获取我的收藏夹列表...")
-            page = await asyncio.to_thread(client.favorite_folder, 1)
-
-            # 列出所有收藏夹文件夹
-            folders = list(page.iter_folder_id_name())
-            if not folders:
-                # 如果没有文件夹列表，直接显示全部收藏
-                yield self.messaging.plain(event,
-                    await self.favorites.render_favorites(client, '0', "⭐ 我的收藏", 20)
-                )
-                return
-
-            # 显示文件夹列表
-            folder_lines = []
-            for fid, fname in folders:
-                fname_cn = self.text.safe_text(fname, self.convert_title)
-                folder_lines.append(f"  📁 [ID:{fid}] {fname_cn}")
-
-            reply = "⭐ 我的收藏夹文件夹：\n\n" + "\n".join(folder_lines)
-            reply += "\n\n💡 /jmfav <文件夹id> 查看内容，/jmfav add <漫画id> 添加收藏"
-            yield self.messaging.plain(event, reply)
-
-        except Exception as e:
-            yield self.messaging.plain(event, self.client.handle_exception(e, "收藏夹操作"))
+        """收藏夹功能：查看/添加/移除/导出"""
+        async for message in self.favorites_handler.handle(event):
+            yield message
 
     async def initialize(self):
         """插件激活时启动订阅更新检查。"""
