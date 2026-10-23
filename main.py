@@ -28,9 +28,10 @@ from .core.config import PluginSettings
 from .core.state import PluginState
 from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
-from .core.parsing import extract_id, parse_positive_page
+from .core.parsing import extract_id, format_index_ranges, parse_positive_page
 from .services.access import AccessService
 from .services.cache import CacheService
+from .services.catalog import CatalogService
 from .services.messaging import MessagingService
 from .services.pagination import PageEventProxy, PageSessionService
 from .services.history import HistoryService
@@ -96,6 +97,7 @@ class JmComicPlugin(Star):
         self.access = AccessService(self.settings)
         self.pagination = PageSessionService(self.settings, self.state)
         self.cache = CacheService(self.settings)
+        self.catalog = CatalogService(self.settings, self.cache, self.text)
         self.text = TextService(self.settings)
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
@@ -109,404 +111,6 @@ class JmComicPlugin(Star):
             f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
             f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
-
-    @staticmethod
-    def _text_list(value):
-        if value is None:
-            return []
-        if isinstance(value, str):
-            value = [value]
-        return [str(item) for item in value if str(item).strip()]
-
-    def _album_display_title(self, album, album_dir=None):
-        name = getattr(album, "name", "") if album is not None else ""
-        if name:
-            return self.text.safe_text(str(name), self.convert_title)
-        metadata = self.cache.read_metadata(album_dir)
-        return metadata.get("title_display") or metadata.get("title") or ""
-
-    def _chapter_display_title(self, photo, index=1, folder=None, album_dir=None):
-        name = getattr(photo, "name", "") if photo is not None else ""
-        if name:
-            return self.text.safe_text(str(name), self.convert_title)
-
-        metadata = self.cache.read_metadata(folder)
-        if metadata.get("title_display") or metadata.get("title"):
-            return metadata.get("title_display") or metadata.get("title")
-
-        photo_id = str(getattr(photo, "photo_id", "") or "")
-        album_metadata = self.cache.read_metadata(album_dir)
-        for item in album_metadata.get("chapters", []) or []:
-            if photo_id and str(item.get("photo_id", "")) == photo_id:
-                return item.get("title_display") or item.get("title") or f"第{index}话"
-        return f"第{index}话"
-
-    @staticmethod
-    def _photo_page_count(photo):
-        """读取章节页数；API 通常提供 page_arr，缺失时回退 page_count/total。"""
-        try:
-            page_arr = getattr(photo, "page_arr", None)
-            if page_arr is not None:
-                count = len(page_arr)
-                if count > 0:
-                    return count
-        except Exception:
-            pass
-        for attr in ("page_count", "total"):
-            try:
-                value = int(getattr(photo, attr, 0) or 0)
-                if value > 0:
-                    return value
-            except (TypeError, ValueError):
-                continue
-        return 0
-
-    def _photo_range_pages(self, photo, page_range=None):
-        total = self._photo_page_count(photo)
-        if total <= 0:
-            return 0
-        if not page_range:
-            return total
-        start, end = int(page_range[0]), page_range[1]
-        start = max(1, min(start, total))
-        end = total if end is None else min(int(end), total)
-        if end < start:
-            start, end = end, start
-        return max(0, end - start + 1)
-
-    def _format_chapter_line(self, photo, index, limit=50):
-        """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。"""
-        position = self._photo_position(photo, index)
-        title = self.text.safe_text(getattr(photo, "name", ""), self.convert_title)
-        title = title[:limit] if title else ""
-        pages = self._photo_page_count(photo)
-        if title:
-            suffix = f"{title}（{pages}页）" if pages else f"{title}（页数未知）"
-        else:
-            suffix = f"（无标题，{pages}页）" if pages else "（无标题，页数未知）"
-        return f"第{position}话 [JM{getattr(photo, 'photo_id', '')}] {suffix}"
-
-    def _save_target_metadata(self, album, album_id, chapters, album_dir,
-                              selected_photos=None):
-        """把漫画/章节标题写入缓存目录，供打包和缺标题兜底使用"""
-        if album_dir is None:
-            return
-        all_chapters = list(chapters or [])
-        if album is not None:
-            try:
-                expanded = list(album)
-                if expanded:
-                    all_chapters = expanded
-            except Exception:
-                pass
-
-        album_id = str(
-            album_id or getattr(album, "album_id", "") or ""
-        )
-        existing = self.cache.read_metadata(album_dir)
-        title = str(
-            (getattr(album, "name", "") if album is not None else "")
-            or existing.get("title", "")
-            or ""
-        )
-        title_display = self.text.safe_text(title, self.convert_title) if title else ""
-        authors = self._text_list(
-            (getattr(album, "authors", None) if album is not None else None)
-            or existing.get("authors", [])
-        )
-        tags = self._text_list(
-            (getattr(album, "tags", None) if album is not None else None)
-            or existing.get("tags", [])
-        )
-        author_display = [
-            self.text.safe_text(item, self.convert_author) for item in authors
-        ]
-        tag_display = [
-            self.text.safe_text(item, self.convert_tags) for item in tags
-        ]
-
-        existing_chapters = {
-            str(item.get("photo_id", "")): item
-            for item in (existing.get("chapters", []) or [])
-            if isinstance(item, dict)
-        }
-        chapter_items = []
-        for index, photo in enumerate(all_chapters, 1):
-            photo_title = str(getattr(photo, "name", "") or "")
-            photo_id = str(getattr(photo, "photo_id", "") or "")
-            previous = existing_chapters.get(photo_id, {})
-            chapter_title_display = (
-                self.text.safe_text(photo_title, self.convert_title)
-                if photo_title else previous.get("title_display", "")
-            )
-            item = {
-                "photo_id": photo_id,
-                "index": index,
-                "title": photo_title or previous.get("title", ""),
-                "title_display": chapter_title_display,
-            }
-            if previous.get("page_count") is not None:
-                item["page_count"] = previous["page_count"]
-            chapter_items.append(item)
-
-        album_data = {
-            "schema": 1,
-            "album_id": album_id,
-            "title": title,
-            "title_display": title_display,
-            "authors": authors,
-            "authors_display": author_display,
-            "tags": tags,
-            "tags_display": tag_display,
-            "chapters": chapter_items,
-            "updated_at": datetime.now().isoformat(timespec="seconds"),
-        }
-        # 先写入专辑信息，章节标题为空时 _chapter_display_title 可从
-        # 专辑元数据里回退；写入章节元数据后再补全专辑里的标题。
-        self.cache.write_metadata(album_dir, album_data)
-
-        if selected_photos is None:
-            selected_photos = all_chapters
-        seen = set()
-        album_items_changed = False
-        for photo in selected_photos:
-            photo_id = str(getattr(photo, "photo_id", "") or "")
-            if not photo_id or photo_id in seen:
-                continue
-            seen.add(photo_id)
-            folder = self.cache.chapter_dir(photo, album_dir)
-            if folder is None:
-                continue
-            index = next(
-                (
-                    item["index"] for item in chapter_items
-                    if item.get("photo_id") == photo_id
-                ),
-                1,
-            )
-            chapter_title = self._chapter_display_title(
-                photo, index, folder, album_dir
-            )
-            page_arr = getattr(photo, "page_arr", None)
-            page_count = len(page_arr) if page_arr else len(self.cache.chapter_images(folder))
-            raw_chapter_title = str(getattr(photo, "name", "") or "")
-            self.cache.write_metadata(folder, {
-                "schema": 1,
-                "album_id": album_id,
-                "album_title": title,
-                "album_title_display": title_display,
-                "photo_id": photo_id,
-                "index": index,
-                "title": raw_chapter_title,
-                "title_display": chapter_title,
-                "page_count": page_count,
-                "updated_at": datetime.now().isoformat(timespec="seconds"),
-            })
-            for item in chapter_items:
-                if item.get("photo_id") != photo_id:
-                    continue
-                if raw_chapter_title:
-                    item["title"] = raw_chapter_title
-                item["title_display"] = chapter_title
-                item["page_count"] = page_count
-                album_items_changed = True
-                break
-
-        if album_items_changed:
-            album_data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-            self.cache.write_metadata(album_dir, album_data)
-
-    def _known_photo_position(self, photo, folder=None, album_dir=None):
-        """只返回可确认的网站话序号；取不到时返回 None。"""
-        return self.cache.known_photo_position(photo, folder, album_dir)
-
-    def _photo_position(self, photo, fallback=1, folder=None, album_dir=None):
-        """取章节在漫画中的网站话序号（1 起），失败时回退到调用方序号。"""
-        position = self._known_photo_position(photo, folder, album_dir)
-        if position is not None:
-            return position
-        return max(1, int(fallback or 1))
-
-    def _unit_metadata_index(self, unit, folder):
-        try:
-            index = int(self.cache.read_metadata(folder).get("index") or unit.index)
-            return index if index > 0 else unit.index
-        except Exception:
-            return unit.index
-
-    def _album_info_text(self, album, album_id, album_dir, chapter_entries):
-        """生成放进 ZIP 的可读漫画信息文件"""
-        metadata = self.cache.read_metadata(album_dir)
-        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
-        authors = self._text_list(
-            (getattr(album, "authors", None) if album is not None else None)
-            or metadata.get("authors", [])
-        )
-        tags = self._text_list(
-            (getattr(album, "tags", None) if album is not None else None)
-            or metadata.get("tags", [])
-        )
-        lines = [
-            "漫画信息",
-            f"标题：{title}",
-            f"ID：JM{album_id}",
-        ]
-        if authors:
-            lines.append("作者：" + "、".join(
-                self.text.safe_text(item, self.convert_author) for item in authors
-            ))
-        if tags:
-            lines.append("标签：" + "、".join(
-                self.text.safe_text(item, self.convert_tags) for item in tags
-            ))
-        lines.append("")
-        lines.append("本次包含：")
-        if not chapter_entries:
-            lines.append("- 无可用话")
-        for unit, folder, _images in chapter_entries:
-            chapter_index = self._unit_metadata_index(unit, folder)
-            chapter_title = self._chapter_display_title(
-                unit.photo, chapter_index, folder, album_dir
-            )
-            page_suffix = (
-                f"（第{unit.start}-{unit.end}页）" if unit.partial else ""
-            )
-            photo_id = getattr(unit.photo, "photo_id", chapter_index)
-            lines.append(
-                f"- 第{chapter_index}话 {chapter_title}{page_suffix}  [JM{photo_id}]"
-            )
-        return "\n".join(lines).rstrip() + "\n"
-
-    def _album_cover_text(self, album, album_id, album_dir, chapter_entries):
-        """PDF 首页封面用的精简信息，避免章节过多时溢出"""
-        metadata = self.cache.read_metadata(album_dir)
-        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
-        authors = self._text_list(
-            (getattr(album, "authors", None) if album is not None else None)
-            or metadata.get("authors", [])
-        )
-        tags = self._text_list(
-            (getattr(album, "tags", None) if album is not None else None)
-            or metadata.get("tags", [])
-        )
-        indexes = [
-            self._unit_metadata_index(unit, folder)
-            for unit, folder, _images in chapter_entries
-        ]
-        lines = [title, f"JM{album_id}"]
-        if authors:
-            lines.append("作者：" + "、".join(
-                self.text.safe_text(item, self.convert_author) for item in authors
-            ))
-        if tags:
-            lines.append("标签：" + "、".join(
-                self.text.safe_text(item, self.convert_tags) for item in tags
-            ))
-        if indexes:
-            index_text = self._format_index_token(indexes)
-            lines.append(f"本次包含：第{index_text}话（共{len(set(indexes))}话）")
-            partial_entries = [
-                entry for entry in chapter_entries if entry[0].partial
-            ]
-            if partial_entries:
-                lines.append("含页段：" + "、".join(
-                    f"第{self._unit_metadata_index(unit, folder)}话 "
-                    f"{unit.start}-{unit.end}页"
-                    for unit, folder, _images in partial_entries[:6]
-                ))
-        return "\n".join(lines)
-
-    def _pdf_metadata(self, album, album_id, album_dir, chapter_entries):
-        metadata = self.cache.read_metadata(album_dir)
-        title = self._album_display_title(album, album_dir) or f"JM{album_id}"
-        authors = self._text_list(
-            (getattr(album, "authors", None) if album is not None else None)
-            or metadata.get("authors", [])
-        )
-        tags = self._text_list(
-            (getattr(album, "tags", None) if album is not None else None)
-            or metadata.get("tags", [])
-        )
-        indexes = [
-            self._unit_metadata_index(unit, folder)
-            for unit, folder, _images in chapter_entries
-        ]
-        result = {
-            "title": title,
-            "subject": f"JM{album_id}"
-            + (f" 第{self._format_index_token(indexes)}话" if indexes else ""),
-        }
-        if authors:
-            result["author"] = "、".join(
-                self.text.safe_text(item, self.convert_author) for item in authors
-            )
-        if tags:
-            result["keywords"] = "、".join(
-                self.text.safe_text(item, self.convert_tags) for item in tags
-            )
-        return result
-
-    @staticmethod
-    def _looks_like_chapter_album(album) -> bool:
-        """识别上游把章节 ID 当漫画 ID 返回的畸形 album 对象。
-
-        API 对章节 ID 会返回 name=zip 文件名、authors/tags=['filename']
-        且章节列表为父漫画的畸形数据；部分章节 ID（如 1236387）的
-        authors/tags 为空，但首项 photo_id 会变成父漫画 ID。两种特征
-        都用于提前给出可操作提示，避免 jmv/jmlist 展示错乱字段。
-        """
-        if album is None:
-            return False
-        authors = getattr(album, "authors", []) or []
-        tags = getattr(album, "tags", []) or []
-        if isinstance(authors, str):
-            authors = [authors]
-        if isinstance(tags, str):
-            tags = [tags]
-        authors = [str(x).strip().lower() for x in authors]
-        tags = [str(x).strip().lower() for x in tags]
-        if (authors and all(x == "filename" for x in authors)) or (
-            tags and all(x == "filename" for x in tags)
-        ):
-            return True
-
-        album_id = str(getattr(album, "album_id", "") or "").strip()
-        try:
-            first = next(iter(album))
-        except (TypeError, StopIteration):
-            return False
-        first_id = str(getattr(first, "photo_id", "") or "").strip()
-        return bool(album_id and first_id and first_id != album_id)
-
-    @staticmethod
-    def _chapter_album_parent_id(album, album_id) -> str:
-        """从畸形章节 album 的首项提取父漫画ID。
-
-        API 返回的畸形章节 album 里，第一项通常是父漫画的占位章节，
-        其 photo_id 就是父漫画ID（例如 275013 的首项 photo_id=43164）。
-        """
-        try:
-            first = next(iter(album))
-        except (TypeError, StopIteration):
-            return ""
-        candidate = str(getattr(first, "photo_id", "") or "").strip()
-        if candidate.isdigit() and candidate != str(album_id):
-            return candidate
-        return ""
-
-    async def _resolve_chapter_album_parent(self, client, album, album_id) -> str:
-        """优先从 album 首项取父漫画ID，失败时用 photo 详情兜底"""
-        parent_id = self._chapter_album_parent_id(album, album_id)
-        if parent_id:
-            return parent_id
-        try:
-            photo = await asyncio.to_thread(client.get_photo_detail, album_id)
-        except Exception:
-            return ""
-        parent_id = str(getattr(photo, "album_id", "") or "").strip()
-        if parent_id.isdigit() and parent_id != str(album_id):
-            return parent_id
-        return ""
 
     # ========== 工具方法 ==========
 
@@ -875,7 +479,7 @@ class JmComicPlugin(Star):
 
         def flush_whole():
             if whole:
-                parts.append(self._format_index_ranges(whole))
+                parts.append(format_index_ranges(whole))
                 whole.clear()
 
         for index in order:
@@ -891,23 +495,6 @@ class JmComicPlugin(Star):
                 parts.append(f"{index}:{start:03d}-{end_text}")
         flush_whole()
         return ",".join(part for part in parts if part)
-
-    @staticmethod
-    def _format_index_ranges(indexes):
-        """把 [1,2,3,5,7,8] 压缩成 1-3,5,7-8"""
-        values = sorted(set(int(x) for x in indexes))
-        if not values:
-            return ""
-        parts = []
-        start = previous = values[0]
-        for value in values[1:]:
-            if value == previous + 1:
-                previous = value
-            else:
-                parts.append(str(start) if start == previous else f"{start}-{previous}")
-                start = previous = value
-        parts.append(str(start) if start == previous else f"{start}-{previous}")
-        return ",".join(parts)
 
     def _output_fresh(self, output: Path, source_dirs):
         """输出文件存在且不比源图片/元数据旧时直接复用"""
@@ -1142,7 +729,7 @@ class JmComicPlugin(Star):
     def _zip_chapter_folder(self, photo, index, folder=None, album_dir=None):
         """ZIP 内话目录名：P{章节id}_第{网站话数}话。"""
         photo_id = str(getattr(photo, "photo_id", index) or index)
-        position = self._photo_position(photo, index, folder, album_dir)
+        position = self.catalog.photo_position(photo, index, folder, album_dir)
         return f"P{photo_id}_第{position}话"
 
     def _chapter_file_stem(self, photo, index, folder=None, album_id="", album_dir=None):
@@ -1152,7 +739,7 @@ class JmComicPlugin(Star):
             or getattr(photo, "album_id", "")
             or "unknown"
         )
-        position = self._photo_position(photo, index, folder, album_dir)
+        position = self.catalog.photo_position(photo, index, folder, album_dir)
         return f"JM{album_id}_P{position:03d}"
 
     def _group_file_stem(self, album_id, album_title, indexes):
@@ -1164,14 +751,10 @@ class JmComicPlugin(Star):
         values = sorted({int(x) for x in indexes})
         return f"JM{album_id}_{self._format_position_token(values)}"
 
-    def _format_index_token(self, indexes):
-        """把话序号格式化为展示用 31-35 / 31,35,40（不补零）。"""
-        return self._format_index_ranges(indexes) or "0"
-
     def _format_position_token(self, indexes):
         """把话序号格式化为文件名用 P031-P035 / P031,P035,P040。"""
         parts = []
-        for token in self._format_index_ranges(indexes).split(","):
+        for token in format_index_ranges(indexes).split(","):
             if not token:
                 continue
             if "-" in token:
@@ -1216,7 +799,7 @@ class JmComicPlugin(Star):
             for unit, folder, _images in entries:
                 if not unit.partial:
                     continue
-                position = self._photo_position(
+                position = self.catalog.photo_position(
                     unit.photo, unit.index, folder, album_dir
                 )
                 stem += f"_P{position:03d}p{unit.start:03d}-{unit.end:03d}"
@@ -1468,7 +1051,7 @@ class JmComicPlugin(Star):
             )
             album_title = getattr(album, "name", "") if album is not None else ""
             selected_total = sum(
-                self._photo_range_pages(photo, page_range)
+                self.catalog.photo_range_pages(photo, page_range)
                 for _index, photo, page_range in selected
             )
             if selected_total <= 0 and kind == "album" and not chapter_expr:
@@ -1520,7 +1103,7 @@ class JmComicPlugin(Star):
                     photo_key = str(getattr(photo, "photo_id", original_index))
                     selected_pages[photo_key] = (
                         selected_pages.get(photo_key, 0)
-                        + self._photo_range_pages(photo, page_range)
+                        + self.catalog.photo_range_pages(photo, page_range)
                     )
                     if photo_key in seen_photos:
                         continue
@@ -1550,14 +1133,14 @@ class JmComicPlugin(Star):
             if album_id and album_dir is None:
                 album_dir = self.cache.find_album_dir(album_id)
             if album_dir is not None:
-                self._save_target_metadata(
+                self.catalog.save_target_metadata(
                     album,
                     album_id,
                     chapters,
                     album_dir,
                     selected_photos=[photo for _index, photo, _range in selected],
                 )
-                album_title = self._album_display_title(album, album_dir) or album_title
+                album_title = self.catalog.album_display_title(album, album_dir) or album_title
 
             # 下载完成后按实际图片数夹取页码，再规划输出文件
             selected, range_notes = self._normalize_selected_ranges(selected, album_dir)
@@ -1569,7 +1152,7 @@ class JmComicPlugin(Star):
             if duplicate_indexes:
                 yield self.messaging.plain(
                     event,
-                    f"ℹ️ {target_label} 第{self._format_index_ranges(duplicate_indexes)}话"
+                    f"ℹ️ {target_label} 第{format_index_ranges(duplicate_indexes)}话"
                     "已在本批次发送过，跳过重复文件"
                 )
             if not selected:
@@ -1590,7 +1173,7 @@ class JmComicPlugin(Star):
             target_sent = 0
             target_failed = 0
             if kind == "photo":
-                target_title = self._chapter_display_title(
+                target_title = self.catalog.chapter_display_title(
                     target.get("photo"), 1, None, album_dir
                 ) or target_id
             else:
@@ -1651,17 +1234,17 @@ class JmComicPlugin(Star):
                 image_paths = [
                     image for _, _, images in chapter_entries for image in images
                 ]
-                info_text = self._album_info_text(
+                info_text = self.catalog.album_info_text(
                     album, album_id, album_dir, chapter_entries
                 )
                 cover_text = None
                 pdf_metadata = None
                 if output_format == "pdf":
-                    pdf_metadata = self._pdf_metadata(
+                    pdf_metadata = self.catalog.pdf_metadata(
                         album, album_id, album_dir, chapter_entries
                     )
                     # 每个 PDF 分册都带漫画信息页，便于单独辨认分册。
-                    cover_text = self._album_cover_text(
+                    cover_text = self.catalog.album_cover_text(
                         album, album_id, album_dir, chapter_entries
                     )
                 try:
@@ -1984,8 +1567,8 @@ class JmComicPlugin(Star):
             client = self.client.get_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
-            if self._looks_like_chapter_album(album):
-                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+            if self.catalog.looks_like_chapter_album(album):
+                parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)
                 if parent_id:
                     parent_line = (
                         f"该话所属漫画：JM{parent_id}\n"
@@ -2064,7 +1647,7 @@ class JmComicPlugin(Star):
             lines.append(sep)
             lines.append(f"  📑 共{len(chapters)}话：")
             for i, photo in enumerate(chapters[:10]):
-                lines.append(f"     {self._format_chapter_line(photo, i + 1)}")
+                lines.append(f"     {self.catalog.format_chapter_line(photo, i + 1)}")
             if len(chapters) > 10:
                 lines.append(
                     f"     ... 共{len(chapters)}话，仅显示前10话"
@@ -2155,8 +1738,8 @@ class JmComicPlugin(Star):
             client = self.client.get_client()
             album = await asyncio.to_thread(client.get_album_detail, album_id)
 
-            if self._looks_like_chapter_album(album):
-                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+            if self.catalog.looks_like_chapter_album(album):
+                parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)
                 if parent_id:
                     parent_line = (
                         f"该话所属漫画：JM{parent_id}\n"
@@ -2201,7 +1784,7 @@ class JmComicPlugin(Star):
                 "━━━━━━━━━━━━━━━",
             ]
             for i, photo in enumerate(page_items):
-                lines.append(self._format_chapter_line(photo, start + i + 1))
+                lines.append(self.catalog.format_chapter_line(photo, start + i + 1))
 
             lines.append(
                 "💡 前方编号为网站话序号，方括号后为漫画自身的章节标题（两者可能不同）"
@@ -3304,8 +2887,8 @@ class JmComicPlugin(Star):
 
             # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
             album = await asyncio.to_thread(client.get_album_detail, album_id)
-            if self._looks_like_chapter_album(album):
-                parent_id = await self._resolve_chapter_album_parent(client, album, album_id)
+            if self.catalog.looks_like_chapter_album(album):
+                parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)
                 parent_line = (
                     f"该话所属漫画：JM{parent_id}，可用 /jmv {parent_id} 查看。\n"
                     if parent_id else ""
@@ -3742,7 +3325,7 @@ class JmComicPlugin(Star):
                                 getattr(photo, "name", "") or "",
                                 self.convert_title,
                             )
-                            index = self._photo_position(photo, i)
+                            index = self.catalog.photo_position(photo, i)
                             lines.append(f"  第{index}话 {chapter_name}".rstrip())
                         if len(new_photos) > 10:
                             lines.append(f"  ... 共 {len(new_photos)} 话")
@@ -3860,8 +3443,8 @@ class JmComicPlugin(Star):
         try:
             client = await asyncio.to_thread(self._new_logged_client)
             album = await asyncio.to_thread(client.get_album_detail, album_id)
-            if self._looks_like_chapter_album(album):
-                parent_id = await self._resolve_chapter_album_parent(
+            if self.catalog.looks_like_chapter_album(album):
+                parent_id = await self.catalog.resolve_chapter_album_parent(
                     client, album, album_id
                 )
                 if parent_id:
