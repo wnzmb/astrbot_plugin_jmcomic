@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
@@ -30,6 +30,8 @@ try:
 except ImportError:
     DownloadCancelledException = None
 from jmcomic.jm_async_downloader import JmAsyncDownloader
+
+from .core.models import PageUnit
 
 
 # 库内置 advanced_retry 的请求级域名轮询配置：
@@ -138,24 +140,6 @@ class PageEventProxy:
 
     def __getattr__(self, name):
         return getattr(self._event, name)
-
-
-class PageUnit(NamedTuple):
-    """一个待打包的页段：章节内第 start~end 页（1 起，含两端）"""
-
-    index: int
-    photo: Any
-    start: int
-    end: int
-    total: int
-
-    @property
-    def pages(self):
-        return max(0, self.end - self.start + 1)
-
-    @property
-    def partial(self):
-        return self.start > 1 or self.end < self.total
 
 
 @register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.8")
