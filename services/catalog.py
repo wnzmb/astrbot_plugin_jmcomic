@@ -3,6 +3,8 @@
 import asyncio
 from datetime import datetime
 
+from astrbot.api import logger
+
 from ..core.parsing import format_index_token
 
 
@@ -11,6 +13,10 @@ class CatalogService:
         self.settings = settings
         self.cache = cache
         self.text = text
+        # 后台预取：每个 album 只保留一个任务；同一话共用 inflight，避免重复请求
+        self._prefetch_tasks = {}
+        self._inflight = {}
+        self._prefetch_semaphore = None
 
     @staticmethod
     def text_list(value):
@@ -77,6 +83,190 @@ class CatalogService:
         if end < start:
             start, end = end, start
         return max(0, end - start + 1)
+
+    async def _fetch_page_count_detail(self, client, photo, position):
+        """抓单话详情里的 page_arr，返回 (photo_id, count, position)。"""
+        photo_id = str(getattr(photo, "photo_id", "") or "")
+        if not photo_id:
+            return None
+        try:
+            detail = await asyncio.to_thread(
+                client.get_photo_detail,
+                photo_id,
+                fetch_album=False,
+                fetch_scramble_id=False,
+            )
+        except Exception as e:
+            logger.warning(f"获取第{position}话页数失败: {e}")
+            return None
+        page_arr = getattr(detail, "page_arr", None)
+        count = len(page_arr or []) if page_arr is not None else 0
+        if count <= 0:
+            try:
+                count = int(getattr(detail, "page_count", 0) or 0)
+            except (TypeError, ValueError):
+                count = 0
+        if count <= 0:
+            return None
+        if not getattr(photo, "name", "") and getattr(detail, "name", ""):
+            photo.name = detail.name
+        photo.page_count = count
+        return photo_id, count, position
+
+    async def _fetch_page_count(self, client, photo, position):
+        """前台和后台共用的单话页数任务；同一 photo_id 不重复请求。"""
+        photo_id = str(getattr(photo, "photo_id", "") or "")
+        if not photo_id:
+            return None
+        existing = self._inflight.get(photo_id)
+        if existing is not None:
+            try:
+                return await existing
+            except Exception:
+                return None
+        task = asyncio.create_task(
+            self._fetch_page_count_detail(client, photo, position)
+        )
+        self._inflight[photo_id] = task
+        try:
+            return await task
+        finally:
+            self._inflight.pop(photo_id, None)
+
+    async def enrich_chapter_pages(self, client, album_id, photos, start_index=1):
+        """为当前可见的话补齐页数，并把结果写回 album metadata。
+
+        `/album` 的 series 只有 id/name/sort，没有 page_arr；这里只对调用方
+        传入的可见话（jmv 前 10 话、jmlist 当前页 10 话）请求 `/chapter`，
+        每个漫画第一次查看会多最多 10 个请求，之后直接读 metadata 缓存。
+        """
+        visible = list(photos or [])
+        if not visible or client is None:
+            return {}
+
+        cached = self.cache.read_album_page_counts(album_id)
+        counts = {}
+        indexes = {}
+        missing = []
+        for offset, photo in enumerate(visible):
+            photo_id = str(getattr(photo, "photo_id", "") or "")
+            if not photo_id:
+                continue
+            position = self.photo_position(photo, start_index + offset)
+            indexes[photo_id] = position
+            count = self.photo_page_count(photo)
+            if count <= 0:
+                count = cached.get(photo_id, 0)
+                if count > 0:
+                    # 只用于展示，不伪造 page_arr，避免影响整本总页数累加
+                    photo.page_count = count
+            if count > 0:
+                counts[photo_id] = count
+            else:
+                missing.append((photo_id, photo, position))
+
+        if not missing:
+            return counts
+
+        by_id = {photo_id: photo for photo_id, photo, _position in missing}
+        results = await asyncio.gather(
+            *(
+                self._fetch_page_count(client, photo, position)
+                for _photo_id, photo, position in missing
+            )
+        )
+        fetched = {}
+        for result in results:
+            if result:
+                photo_id, count, _position = result
+                fetched[photo_id] = count
+                photo = by_id.get(photo_id)
+                if photo is not None:
+                    photo.page_count = count
+        if fetched:
+            counts.update(fetched)
+            self.cache.update_album_page_counts(album_id, fetched, indexes)
+        return counts
+
+    def schedule_page_prefetch(self, client, album_id, chapters, start_index, page_size):
+        """当前页之后预取 N 页话页数；同一 album 只跑一个后台任务。
+
+        start_index 是下一话在 chapters 里的 0-based 下标。任务只做 best-effort，
+        用户跳到更后面的页时前台仍会立即补齐当前页。
+        """
+        pages = int(getattr(self.settings, "page_prefetch_pages", 0) or 0)
+        if pages <= 0 or client is None:
+            return
+        album_key = str(album_id)
+        task = self._prefetch_tasks.get(album_key)
+        if task is not None and not task.done():
+            return
+        chapters = list(chapters or [])
+        page_size = max(1, int(page_size or 1))
+        start = max(0, int(start_index or 0))
+        end = min(len(chapters), start + pages * page_size)
+        targets = [(index + 1, chapters[index]) for index in range(start, end)]
+        if not targets:
+            return
+        try:
+            task = asyncio.create_task(
+                self._prefetch_pages(client, album_key, targets)
+            )
+        except RuntimeError:
+            return
+        self._prefetch_tasks[album_key] = task
+
+        def cleanup(done):
+            if self._prefetch_tasks.get(album_key) is done:
+                self._prefetch_tasks.pop(album_key, None)
+
+        task.add_done_callback(cleanup)
+
+    async def _prefetch_pages(self, client, album_id, targets):
+        """后台批量补齐；每 10 话合并写一次 metadata。"""
+        if self._prefetch_semaphore is None:
+            self._prefetch_semaphore = asyncio.Semaphore(2)
+        try:
+            async with self._prefetch_semaphore:
+                cached = self.cache.read_album_page_counts(album_id)
+                pending = []
+                for position, photo in targets:
+                    photo_id = str(getattr(photo, "photo_id", "") or "")
+                    if not photo_id:
+                        continue
+                    if self.photo_page_count(photo) > 0 or cached.get(photo_id):
+                        continue
+                    pending.append((photo_id, photo, position))
+                request_semaphore = asyncio.Semaphore(3)
+
+                async def fetch_one(photo, position):
+                    async with request_semaphore:
+                        return await self._fetch_page_count(client, photo, position)
+
+                for offset in range(0, len(pending), 10):
+                    batch = pending[offset:offset + 10]
+                    results = await asyncio.gather(
+                        *(
+                            fetch_one(photo, position)
+                            for _photo_id, photo, position in batch
+                        )
+                    )
+                    fetched = {}
+                    indexes = {}
+                    for result in results:
+                        if not result:
+                            continue
+                        photo_id, count, position = result
+                        fetched[photo_id] = count
+                        indexes[photo_id] = position
+                    if fetched:
+                        self.cache.update_album_page_counts(album_id, fetched, indexes)
+                    if offset + 10 < len(pending):
+                        await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"后台预取话页数失败（JM{album_id}）: {e}")
 
     def format_chapter_line(self, photo, index, limit=50):
         """统一 jmv/jmlist 的章节行：第n话 [JM章节id] 漫画原标题（N页）。

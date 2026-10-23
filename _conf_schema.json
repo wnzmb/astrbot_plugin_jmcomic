@@ -122,6 +122,17 @@
     },
     "hint": "列表、历史、评论、排行或搜索结果发出后，在多少秒内发送“下一页/下页”或 /jmnext 可自动翻页，默认 60；0 表示关闭自动翻页会话。"
   },
+  "page_prefetch_pages": {
+    "type": "int",
+    "default": 2,
+    "description": "话页数后台预取页数",
+    "slider": {
+      "min": 0,
+      "max": 5,
+      "step": 1
+    },
+    "hint": "jmv/jmlist 显示当前页后，后台继续预取之后 N 页的话页数，默认 2；0=关闭。每页约 per_page 个章节详情请求，建议 2；5 已较激进，可能触发站点限流。"
+  },
   "subscribe_interval": {
     "type": "int",
     "default": 3600,

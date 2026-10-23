@@ -3,6 +3,8 @@
 import json
 import os
 import re
+import threading
+from datetime import datetime
 from pathlib import Path
 
 from astrbot.api import logger
@@ -13,6 +15,8 @@ from ..core.downloader import ProgressDownloader
 class CacheService:
     def __init__(self, settings):
         self.settings = settings
+        # 后台预取与前台 jmlist 可能同时合并页数，读改写必须串行
+        self._metadata_lock = threading.RLock()
 
     # ========== 漫画目录 ==========
     @staticmethod
@@ -92,6 +96,87 @@ class CacheService:
         except Exception as e:
             logger.warning(f"写入缓存元数据失败: {e}")
             return False
+
+    # ========== 话页数缓存 ==========
+    def album_meta_dir(self, album_id):
+        """定位 album metadata 目录；没下载过时允许只有 metadata、没有图片。"""
+        album_id = str(album_id or "").strip()
+        if not album_id:
+            return None
+        folder = self.find_album_dir(album_id)
+        if folder is not None:
+            return folder
+        return self.settings.download_base_dir / f"JM{album_id}"
+
+    def read_album_page_counts(self, album_id):
+        """读取 album metadata 里已缓存的话页数：{photo_id: page_count}。"""
+        folder = self.album_meta_dir(album_id)
+        data = self.read_metadata(folder)
+        result = {}
+        for item in data.get("chapters", []) or []:
+            if not isinstance(item, dict):
+                continue
+            photo_id = str(item.get("photo_id", "") or "")
+            try:
+                count = int(item.get("page_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if photo_id and count > 0:
+                result[photo_id] = count
+        return result
+
+    def update_album_page_counts(self, album_id, page_counts, indexes=None):
+        """把补齐的话页数写回 album metadata，供后续 jmv/jmlist 直接复用。"""
+        if not page_counts:
+            return False
+        with self._metadata_lock:
+            return self._update_album_page_counts_locked(album_id, page_counts, indexes)
+
+    def _update_album_page_counts_locked(self, album_id, page_counts, indexes=None):
+        folder = self.album_meta_dir(album_id)
+        if folder is None:
+            return False
+        data = self.read_metadata(folder)
+        if not data:
+            data = {"schema": 1, "album_id": str(album_id), "chapters": []}
+        chapters = data.get("chapters")
+        if not isinstance(chapters, list):
+            chapters = []
+            data["chapters"] = chapters
+        by_id = {
+            str(item.get("photo_id", "")): item
+            for item in chapters
+            if isinstance(item, dict)
+        }
+        indexes = indexes or {}
+        changed = False
+        for photo_id, count in page_counts.items():
+            photo_id = str(photo_id)
+            try:
+                count = int(count)
+            except (TypeError, ValueError):
+                continue
+            if not photo_id or count <= 0:
+                continue
+            item = by_id.get(photo_id)
+            if item is None:
+                item = {"photo_id": photo_id, "page_count": count}
+                try:
+                    index = int(indexes.get(photo_id) or 0)
+                except (TypeError, ValueError):
+                    index = 0
+                if index > 0:
+                    item["index"] = index
+                chapters.append(item)
+                by_id[photo_id] = item
+                changed = True
+            elif item.get("page_count") != count:
+                item["page_count"] = count
+                changed = True
+        if not changed:
+            return False
+        data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        return self.write_metadata(folder, data)
 
     def known_photo_position(self, photo, folder=None, album_dir=None):
         """只返回可确认的网站话序号；取不到时返回 None。

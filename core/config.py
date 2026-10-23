@@ -185,6 +185,7 @@ class PluginSettings:
     pdf_page_limit: int
     zip_page_limit: int
     page_turn_timeout: int
+    page_prefetch_pages: int
 
     use_proxy: bool
     proxy_url: str
@@ -293,6 +294,10 @@ class PluginSettings:
             zip_page_limit=min(2000, max(0, configured_zip_pages)),
             # 翻页会话有效期：发送“下一页/下页”或 /jmnext 时使用
             page_turn_timeout=max(0, int(config.get("page_turn_timeout", 60) or 0)),
+            # 后台预取页数：jmv/jmlist 当前页之后预取 N 页话页数，0=关闭
+            page_prefetch_pages=min(
+                5, max(0, int(config.get("page_prefetch_pages", 2) or 0))
+            ),
             use_proxy=use_proxy,
             proxy_url=proxy_url,
             client_type=client_type,

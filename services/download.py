@@ -122,7 +122,10 @@ class DownloadService:
         if expected <= 0:
             try:
                 detail = await asyncio.to_thread(
-                    self.client.get_client().get_photo_detail, photo.photo_id
+                    self.client.get_client().get_photo_detail,
+                    photo.photo_id,
+                    fetch_album=False,
+                    fetch_scramble_id=False,
                 )
                 page_arr = getattr(detail, "page_arr", None)
                 expected = len(page_arr or [])

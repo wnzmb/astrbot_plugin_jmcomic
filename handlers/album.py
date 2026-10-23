@@ -104,6 +104,17 @@ class AlbumHandler:
                 return
 
             chapters = list(album) if hasattr(album, '__iter__') else []
+            try:
+                # /album 不返回每话页数，只为详情页展示的前 10 话补一次并缓存
+                await self.catalog.enrich_chapter_pages(
+                    client, album_id, chapters[:10], start_index=1
+                )
+                # 当前页发完后，后台继续预取之后 N 页（默认 2 页）
+                self.catalog.schedule_page_prefetch(
+                    client, album_id, chapters, 10, 10
+                )
+            except Exception as e:
+                logger.warning(f"补齐话页数失败: {e}")
             authors = getattr(album, 'authors', [])
             works = getattr(album, 'works', [])
             actors = getattr(album, 'actors', [])
@@ -293,6 +304,18 @@ class AlbumHandler:
             start = (page_num - 1) * page_size
             page_items = chapters[start:start + page_size]
             album_title = self.text.safe_text(album.name, self.settings.convert_title)
+
+            try:
+                # 只为当前页的话补页数，结果写入 album metadata 供下次直接复用
+                await self.catalog.enrich_chapter_pages(
+                    client, album_id, page_items, start_index=start + 1
+                )
+                # 当前页发完后，后台继续预取之后 N 页（默认 2 页）
+                self.catalog.schedule_page_prefetch(
+                    client, album_id, chapters, start + page_size, page_size
+                )
+            except Exception as e:
+                logger.warning(f"补齐话页数失败: {e}")
 
             lines = [
                 f"📚 {album_title}",
