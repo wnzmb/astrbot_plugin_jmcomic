@@ -245,6 +245,14 @@
 
 ---
 
+## 文档
+
+- [测试流程](docs/测试流程.md)
+- [开发文档与修复日志](docs/开发文档与修复日志.md)
+- [重构计划](docs/REFACTOR_PLAN.md)
+
+---
+
 ## 致谢
 
 本插件基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，感谢原作者。

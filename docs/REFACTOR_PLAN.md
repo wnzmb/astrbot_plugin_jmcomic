@@ -17,7 +17,7 @@
 2. 命令函数名、别名、装饰器参数、版本号 `0.7.8` 不改。
 3. 业务逻辑从 `main.py` 移到 `handlers/` 与 `services/`，但第一阶段只“搬家”，不顺手改行为。
 4. 不引入数据库、不引入新第三方依赖、不改配置 schema、不改缓存目录、不改输出文件命名、不改 QQ 消息预算策略。
-5. 每批迁移必须独立可运行、可回滚；仓库与 `C:\Users\Administrator\.astrbot\data\plugins\astrbot_plugin_jmcomic` 在每批完成后同步并校验哈希。
+5. 每批迁移必须独立可运行、可回滚；仓库与 `<AstrBot>\data\plugins\astrbot_plugin_jmcomic` 在每批完成后同步并校验哈希。
 
 ---
 
@@ -998,7 +998,7 @@ plugins/astrbot_plugin_jmcomic/main.py
 
 ### 10.5 部署验收
 
-- [ ] 仓库 `D:\1.Project\Gitproject\Github\astrbot_plugin_jmcomic` 与运行目录 `C:\Users\Administrator\.astrbot\data\plugins\astrbot_plugin_jmcomic` 文件一致。
+- [ ] 仓库 `<repo>` 与运行目录 `<AstrBot>\data\plugins\astrbot_plugin_jmcomic` 文件一致。
 - [ ] `main.py`、`core/`、`services/`、`handlers/`、`ui/` 全部同步。
 - [ ] 哈希校验一致（至少 `main.py` 与新增模块）。
 - [ ] 插件重载成功，日志无 ImportError/AttributeError。
