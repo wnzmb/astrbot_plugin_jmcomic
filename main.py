@@ -2,7 +2,6 @@ import os
 import asyncio
 import zipfile
 import math
-import json
 import re
 import time
 from datetime import datetime
@@ -36,6 +35,7 @@ from .services.progress import ActiveDownloadService
 from .services.quota import FileQuotaService
 from .services.search import SearchService
 from .services.selection import SelectionService
+from .services.subscriptions import SubscriptionService
 from .services.text import TextService
 
 @register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.8")
@@ -106,6 +106,9 @@ class JmComicPlugin(Star):
         self.checkin = CheckinService(self.settings)
         self.favorites = FavoritesService(
             self.settings, self.client, self.text, self.messaging, self.quota
+        )
+        self.subscriptions = SubscriptionService(
+            self.settings, self.client, self.text, self.catalog, self.state, self.context
         )
         self.progress = ActiveDownloadService(self.state)
         self.selection = SelectionService(self.settings, self.cache, self.state)
@@ -1619,128 +1622,6 @@ class JmComicPlugin(Star):
         yield self.messaging.plain(event, f"📝 最新更新日志：\n\n{reply}")
 
     # ========== /jmsub 订阅更新 ==========
-    def _load_subscriptions(self):
-        try:
-            data = json.loads(self.subscription_file.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-        except Exception as e:
-            logger.warning(f"读取订阅文件失败: {e}")
-            return {}
-
-    def _save_subscriptions(self, data):
-        try:
-            tmp = self.subscription_file.with_suffix(".json.tmp")
-            tmp.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(tmp, self.subscription_file)
-        except Exception as e:
-            logger.warning(f"保存订阅文件失败: {e}")
-
-    @staticmethod
-    def _album_photo_ids(album):
-        result = []
-        try:
-            for photo in album:
-                photo_id = str(getattr(photo, "photo_id", "") or "")
-                if photo_id:
-                    result.append(photo_id)
-        except Exception:
-            pass
-        return result
-
-    def _subscription_snapshot(self, album):
-        try:
-            title = str(getattr(album, "name", "") or "")
-        except Exception:
-            title = ""
-        return {
-            "title": title,
-            "photo_ids": self._album_photo_ids(album),
-            "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-    async def _check_subscriptions_once(self):
-        """检查所有会话的订阅，有新增章节时推送到对应会话。"""
-        data = self._load_subscriptions()
-        if not data:
-            return
-        if self.state.subscription_lock is None:
-            self.state.subscription_lock = asyncio.Lock()
-        async with self.state.subscription_lock:
-            client = await asyncio.to_thread(self._new_logged_client)
-            changed = False
-            for umo, subs in list(data.items()):
-                if not isinstance(subs, dict):
-                    continue
-                for album_id, info in list(subs.items()):
-                    if not isinstance(info, dict):
-                        continue
-                    try:
-                        album = await asyncio.to_thread(
-                            client.get_album_detail, album_id
-                        )
-                        old_ids = {str(x) for x in (info.get("photo_ids") or [])}
-                        photos = list(album)
-                        new_photos = [
-                            p for p in photos
-                            if str(getattr(p, "photo_id", "")) not in old_ids
-                        ]
-                        if not new_photos:
-                            continue
-
-                        title = self.text.safe_text(
-                            getattr(album, "name", "") or info.get("title", ""),
-                            self.convert_title,
-                        ) or f"JM{album_id}"
-                        lines = [
-                            f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 话"
-                        ]
-                        for i, photo in enumerate(new_photos[:10], 1):
-                            chapter_name = self.text.safe_text(
-                                getattr(photo, "name", "") or "",
-                                self.convert_title,
-                            )
-                            index = self.catalog.photo_position(photo, i)
-                            lines.append(f"  第{index}话 {chapter_name}".rstrip())
-                        if len(new_photos) > 10:
-                            lines.append(f"  ... 共 {len(new_photos)} 话")
-                        lines.append("")
-                        lines.append(f"/jmv {album_id} 查看详情")
-                        text = self.text.safe_text("\n".join(lines))
-
-                        sent = await self.context.send_message(
-                            umo, MessageChain(chain=[Comp.Plain(text)])
-                        )
-                        if sent is False:
-                            logger.warning(f"订阅推送未找到可用平台: {umo}")
-                            continue
-
-                        info["photo_ids"] = self._album_photo_ids(album)
-                        info["title"] = str(getattr(album, "name", "") or "")
-                        info["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                        changed = True
-                    except Exception as e:
-                        logger.warning(f"检查订阅 JM{album_id} 失败: {e}")
-                    # 每本之间稍作间隔，避免集中请求触发限流
-                    await asyncio.sleep(2)
-            if changed:
-                self._save_subscriptions(data)
-
-    async def _subscription_loop(self):
-        while True:
-            interval = max(0, int(self.subscribe_interval or 0))
-            if interval <= 0:
-                return
-            try:
-                await asyncio.sleep(interval)
-                await self._check_subscriptions_once()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"订阅检查失败: {e}")
-                await asyncio.sleep(60)
 
     @filter.command("jmsub")
     async def jm_subscribe(self, event: AstrMessageEvent):
@@ -1754,7 +1635,7 @@ class JmComicPlugin(Star):
             return
         args = event.message_str.split()
         umo = event.unified_msg_origin
-        data = self._load_subscriptions()
+        data = self.subscriptions.load()
         subs = data.get(umo)
         if not isinstance(subs, dict):
             subs = {}
@@ -1795,7 +1676,7 @@ class JmComicPlugin(Star):
                 data[umo] = subs
             else:
                 data.pop(umo, None)
-            self._save_subscriptions(data)
+            self.subscriptions.save(data)
             yield self.messaging.plain(event, f"✅ 已取消订阅 JM{album_id}")
             return
 
@@ -1818,7 +1699,7 @@ class JmComicPlugin(Star):
 
         yield self.messaging.plain(event, f"🔔 正在读取 JM{album_id} 的话信息...")
         try:
-            client = await asyncio.to_thread(self._new_logged_client)
+            client = await asyncio.to_thread(self.client.get_client)
             album = await asyncio.to_thread(client.get_album_detail, album_id)
             if self.catalog.looks_like_chapter_album(album):
                 parent_id = await self.catalog.resolve_chapter_album_parent(
@@ -1836,7 +1717,7 @@ class JmComicPlugin(Star):
                     )
                 return
 
-            snapshot = self._subscription_snapshot(album)
+            snapshot = self.subscriptions.snapshot(album)
             if not snapshot["photo_ids"]:
                 yield self.messaging.plain(event,
                     f"⚠️ JM{album_id} 没有话列表，暂时无法订阅"
@@ -1846,7 +1727,7 @@ class JmComicPlugin(Star):
             existed = album_id in subs
             subs[album_id] = snapshot
             data[umo] = subs
-            self._save_subscriptions(data)
+            self.subscriptions.save(data)
 
             title = self.text.safe_text(
                 snapshot["title"] or f"JM{album_id}", self.convert_title
@@ -2059,7 +1940,7 @@ class JmComicPlugin(Star):
         if self.subscribe_interval > 0 and self.state.subscribe_task is None:
             if self.state.subscription_lock is None:
                 self.state.subscription_lock = asyncio.Lock()
-            self.state.subscribe_task = asyncio.create_task(self._subscription_loop())
+            self.state.subscribe_task = asyncio.create_task(self.subscriptions.loop())
             logger.info(f"订阅更新检查已启动，间隔 {self.subscribe_interval} 秒")
 
     async def terminate(self):
