@@ -19,6 +19,7 @@ from .core.state import PluginState
 from .handlers.album import AlbumHandler
 from .handlers.download import DownloadHandler
 from .handlers.library import LibraryHandler
+from .handlers.navigation import NavigationHandler
 from .handlers.search import SearchHandler
 from .services.access import AccessService
 from .services.cache import CacheService
@@ -29,7 +30,7 @@ from .services.download_runner import DownloadRunner
 from .services.favorites import FavoritesService
 from .services.messaging import MessagingService
 from .services.packaging import PackagingService
-from .services.pagination import PageEventProxy, PageSessionService
+from .services.pagination import PageSessionService
 from .services.history import HistoryService
 from .services.progress import ActiveDownloadService
 from .services.quota import FileQuotaService
@@ -139,6 +140,20 @@ class JmComicPlugin(Star):
             self.pagination, self.messaging, self.text, self.catalog,
             self.selection, self.state,
         )
+        self.navigation = NavigationHandler(
+            self.access, self.pagination, self.messaging,
+            {
+                "jm_chapter_list": self.album.chapter_list,
+                "jm_history": self.library.history,
+                "jm_comments": self.library.comments,
+                "jm_ranking": self.library.ranking,
+                "jm_search": self.search_handler.site,
+                "jm_search_author": self.search_handler.author,
+                "jm_search_tag": self.search_handler.tag,
+                "jm_search_actor": self.search_handler.actor,
+                "jm_search_work": self.search_handler.work,
+            },
+        )
 
         logger.info(
             f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
@@ -193,48 +208,16 @@ class JmComicPlugin(Star):
             yield message
 
     # ========== /jmnext 翻页 ==========
-    async def _follow_page_session(self, event, session):
-        next_command = session.get("next_command", "")
-        parts = next_command.strip().split()
-        if not parts:
-            return
-        command = parts[0].lstrip("/").lower()
-        handler_name = self.pagination.page_handler_name(command)
-        handler = getattr(self, handler_name, None) if handler_name else None
-        if handler is None:
-            return
-        proxy = PageEventProxy(event, next_command)
-        async for message in handler(proxy):
-            yield message
-
     @filter.command("jmnext")
     async def jm_next(self, event: AstrMessageEvent):
         """翻到最近一次列表的下一页"""
-        if not self.access.check_permission(event):
-            yield self.messaging.plain(event, self.access.permission_denied_text(event))
-            return
-        session = self.pagination.get(event)
-        if session is None:
-            yield self.messaging.plain(
-                event,
-                "当前没有可翻页的列表，或已超时。请先使用 /jmlist、/jmhis、"
-                "/jmc、/jmrank 或搜索命令。",
-            )
-            return
-        self.pagination.clear(event)
-        async for message in self._follow_page_session(event, session):
+        async for message in self.navigation.next(event):
             yield message
 
     @filter.regex(r"^(?:下一页|下页)$")
     async def jm_next_keyword(self, event: AstrMessageEvent):
         """在有效期内发送“下一页/下页”自动翻页；无会话时静默。"""
-        if not self.access.check_permission(event):
-            return
-        session = self.pagination.get(event)
-        if session is None:
-            return
-        self.pagination.clear(event)
-        async for message in self._follow_page_session(event, session):
+        async for message in self.navigation.next_keyword(event):
             yield message
 
     # ========== /jmrand 随机漫画 ==========
