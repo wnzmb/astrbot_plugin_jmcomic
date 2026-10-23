@@ -931,15 +931,15 @@ plugins/astrbot_plugin_jmcomic/main.py
 
 ### 10.1 结构验收
 
-- [ ] `main.py` 只包含 `@register`、`JmComicPlugin` 组装、命令包装、`initialize/terminate`。
-- [ ] `main.py` 行数 ≤ 450（不含注释/空行可另算）。
-- [ ] `main.py` 不再出现 `download_album_async`、`zipfile`、`PIL`、`reportlab`、`img2pdf`、`search_site` 等业务实现。
-- [ ] `rg "from main import|import main"` 在插件代码中无结果。
-- [ ] `core` 不 import `services/handlers/main`。
-- [ ] `services` 不 import `handlers/main`。
-- [ ] `handlers` 不 import `main`。
-- [ ] 所有命令函数名、别名、装饰器参数与当前一致。
-- [ ] `PageUnit`、`ProgressDownloader` 只有一个定义；旧 re-export 已清理或明确保留原因。
+- [x] `main.py` 只包含 `@register`、`JmComicPlugin` 组装、命令包装、`initialize/terminate`。
+- [x] `main.py` 行数 ≤ 450（不含注释/空行可另算）。
+- [x] `main.py` 不再出现 `download_album_async`、`zipfile`、`PIL`、`reportlab`、`img2pdf`、`search_site` 等业务实现。
+- [x] `rg "from main import|import main"` 在插件代码中无结果。
+- [x] `core` 不 import `services/handlers/main`。
+- [x] `services` 不 import `handlers/main`。
+- [x] `handlers` 不 import `main`。
+- [x] 所有命令函数名、别名、装饰器参数与当前一致。
+- [x] `PageUnit`、`ProgressDownloader` 只有一个定义；旧 re-export 已清理或明确保留原因。
 
 ### 10.2 命令验收
 
@@ -990,7 +990,7 @@ plugins/astrbot_plugin_jmcomic/main.py
 - [ ] `test_jm_078_bug013.py` 通过。
 - [ ] `test_jm_regressions.py` 通过。
 - [ ] 新增包导入测试通过。
-- [ ] `python -m compileall` 通过。
+- [x] `python -m compileall` 通过。
 - [ ] 真实环境 R08（消息压缩/进度）通过。
 - [ ] 真实环境 R13（翻页/封面 PDF）通过。
 - [ ] 真实环境 R01/R02/R03/R04/R06/R12 抽样通过。
@@ -1291,3 +1291,32 @@ async def jm_view(self, event: AstrMessageEvent):
 - [ ] 确认 `ProgressDownloader` 只有一个模块副本。
 - [ ] 确认 `main.py` 中所有命令包装器的函数名/别名清单已抄录。
 - [ ] 确认每批迁移只做“移动 + 委托”，不混入功能修复。
+
+---
+
+## 11. 实施进度
+
+### 11.1 批次状态
+
+| 批次 | 内容 | 状态 | 提交 |
+|---|---|---|---|
+| 0 | 基线与约束（目录骨架、包导入） | 完成 | `a7fcafd` |
+| 1 | core 基础层（models/config/state/client/downloader/parsing） | 完成 | `0da473e` `4334503` `fd1b1ce` `8d1d7f0` `2664887` `4a7961a` |
+| 2 | 通用服务（access/text/messaging/quota/history/progress/pagination） | 完成 | `4c232d7` `f4d8c31` `90d1182` `28b8df7` `d5622de` `d57896e` `1739da7` |
+| 3 | 缓存与目录元数据 | 完成 | `2c356ec` `f0a8639` |
+| 4 | 目标识别与章节/页段选择 | 完成 | `6939fa6` |
+| 5 | 打包与命名 | 完成 | `755240c` |
+| 6 | 下载执行与消息预算 | 完成 | `1032fa1` `d94444f` `b8a9424` `5a3cfca` `aef016c` `9ab91f8` |
+| 7 | 只读命令处理器 | 完成 | `2b0daf8` `8753c79` `a5fcdc4` |
+| 8 | 下载/翻页/账号命令处理器 | 完成 | `4c227a6` `bed60a7` `b49cb73` `1299512` |
+| 9 | 收藏/订阅与收尾 | 完成 | `65afb4e` `5e70ba2` |
+
+### 11.2 收尾结果
+
+- `main.py`：321 行，仅保留 `@register`、`JmComicPlugin` 组装、24 个命令包装器、`initialize/terminate`。
+- 命令包装器与重构前逐行一致（`@filter.command` / `@filter.regex` 共 24 条，`git diff` 无差异）。
+- 兼容属性层已删除：全部改用 `self.settings.*`；`_zip_folder` 死代码已删除。
+- 帮助文案迁至 `ui/help.py`（`build_help_text(settings, quota)`），与迁移前字符串逐字一致（AST 提取 + eval 比对 `IDENTICAL`）。
+- `handlers/`、`ui/` 补 `__init__.py`，与 `core/`、`services/` 一致。
+- 静态检查：`ruff check --select F821,F811,F401,F841` 全通过；`python -m compileall` 通过。
+- 未完成：本地无 `astrbot`/`jmcomic` 运行环境，10.2 命令验收、10.4 真实环境用例需在 AstrBot 实例中执行；仓库内未包含 `test_jm_*.py` 套件，10.4 的单测项待补。
