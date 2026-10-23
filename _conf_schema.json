@@ -102,14 +102,14 @@
   },
   "pdf_page_limit": {
     "type": "int",
-    "default": 100,
+    "default": 200,
     "description": "PDF 每册页数上限",
     "slider": {
       "min": 1,
       "max": 2000,
       "step": 10
     },
-    "hint": "PDF 优先整话装册，达到上限就换下一册；单话超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。每个分册都会加漫画信息页。默认 100 页。"
+    "hint": "PDF 优先整话装册，达到上限就换下一册；单话超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。每个分册都会加漫画信息页。默认 200 页。"
   },
   "page_turn_timeout": {
     "type": "int",
@@ -235,9 +235,9 @@
   },
   "numeric_search_as_album": {
     "type": "bool",
-    "default": false,
+    "default": true,
     "description": "jms 纯数字按车号查详情",
-    "hint": "开启后 /jms 123456 会直接显示漫画详情（等同 /jmv 123456），不再当作搜索词；默认关闭，避免影响纯数字搜索。"
+    "hint": "开启后 /jms 123456 会直接显示漫画详情（等同 /jmv 123456），不再当作搜索词；默认开启，纯数字直接查详情。"
   },
   "daily_file_limit": {
     "type": "int",
