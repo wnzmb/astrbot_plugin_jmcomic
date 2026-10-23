@@ -38,8 +38,10 @@ class TextService:
         sensitive_map.update(self.settings.custom_sensitive_map)
         result = []
         for tag in tags:
-            # 先替换已知敏感词
-            for cn, pinyin in sensitive_map.items():
+            # 先替换已知敏感词；长词优先，避免“性虐待”被“性虐”截断成 xingnve待
+            for cn, pinyin in sorted(
+                sensitive_map.items(), key=lambda item: len(item[0]), reverse=True
+            ):
                 if cn in tag:
                     tag = tag.replace(cn, pinyin)
 
