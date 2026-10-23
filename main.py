@@ -1,5 +1,4 @@
 import os
-import csv
 import asyncio
 import zipfile
 import math
@@ -28,6 +27,7 @@ from .services.catalog import CatalogService
 from .services.checkin import CheckinService
 from .services.download import DownloadService
 from .services.download_runner import DownloadRunner
+from .services.favorites import FavoritesService
 from .services.messaging import MessagingService
 from .services.packaging import PackagingService
 from .services.pagination import PageEventProxy, PageSessionService
@@ -104,6 +104,9 @@ class JmComicPlugin(Star):
         self.quota = FileQuotaService(self.settings)
         self.history = HistoryService(self.settings)
         self.checkin = CheckinService(self.settings)
+        self.favorites = FavoritesService(
+            self.settings, self.client, self.text, self.messaging, self.quota
+        )
         self.progress = ActiveDownloadService(self.state)
         self.selection = SelectionService(self.settings, self.cache, self.state)
         self.packaging = PackagingService(self.settings, self.catalog)
@@ -1615,115 +1618,6 @@ class JmComicPlugin(Star):
             reply = reply[:1750] + "\n...（已截断）"
         yield self.messaging.plain(event, f"📝 最新更新日志：\n\n{reply}")
 
-    # ========== /jmfav 收藏夹 ==========
-    def _clear_client_cache(self, client):
-        """收藏状态是 toggle 接口，操作前后必须清缓存，避免 is_favorite 读到旧值"""
-        try:
-            cache = client.get_cache_dict()
-            if cache:
-                cache.clear()
-        except Exception:
-            pass
-
-    async def _favorite_state(self, client, album_id):
-        """返回 (是否已收藏, 漫画详情)"""
-        self._clear_client_cache(client)
-        album = await asyncio.to_thread(client.get_album_detail, album_id)
-        return bool(getattr(album, 'is_favorite', False)), album
-
-    async def _render_favorites(self, client, folder_id='0', title='⭐ 当前收藏', limit=10):
-        """渲染收藏夹内容，操作后自动调用"""
-        page = await asyncio.to_thread(client.favorite_folder, 1, folder_id=folder_id)
-        total = getattr(page, 'total', None)
-        items = list(page.iter_id_title_tag())
-        if not items:
-            return f"{title}：空"
-
-        results = []
-        for i, (aid, item_title, tags) in enumerate(items[:limit]):
-            item_title = self.text.safe_text(item_title, self.convert_title)
-            tags = [self.text.safe_text(t, self.convert_tags) for t in tags]
-            safe_tags = tags[:3]
-            tag_str = f" [{', '.join(safe_tags)}]" if safe_tags else ""
-            results.append(f"{i+1}. [JM{aid}] {item_title}{tag_str}")
-
-        total_text = total if total is not None else len(items)
-        reply = f"{title}（共{total_text}本，显示前{len(results)}本）：\n\n" + "\n".join(results)
-        reply += "\n\n/jmv <id> 查详情，/jm <id> 下载"
-        return reply
-
-    @staticmethod
-    def _collect_favorite_rows(client, folder_id):
-        """同步收集收藏夹全部条目，供 asyncio.to_thread 调用。"""
-        rows = []
-        seen = set()
-        for page in client.favorite_folder_gen(folder_id=folder_id):
-            for aid, extra in page.content:
-                aid = str(aid)
-                if aid in seen:
-                    continue
-                seen.add(aid)
-                rows.append((
-                    aid,
-                    str(extra.get('author', '') or ''),
-                    str(extra.get('name', '') or ''),
-                ))
-        return rows
-
-    @staticmethod
-    def _write_favorites_csv(path, rows):
-        """写 CSV；utf-8-sig 方便 Windows Excel 直接打开。"""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open('w', encoding='utf-8-sig', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['id', 'author', 'name'])
-            writer.writerows(rows)
-
-    async def _export_favorites(self, event: AstrMessageEvent, folder_id: str):
-        """导出收藏夹为 CSV 文件（仅号主，无加密）。"""
-        try:
-            client = self.client.get_client()
-            if not self.client.configured_username():
-                yield self.messaging.plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
-                return
-
-            folder_name = "全部"
-            if folder_id != "0":
-                folder_name = f"收藏夹{folder_id}"
-                try:
-                    page = await asyncio.to_thread(client.favorite_folder, 1)
-                    for fid, fname in page.iter_folder_id_name():
-                        if str(fid) == str(folder_id):
-                            folder_name = fname or folder_name
-                            break
-                except Exception as e:
-                    logger.warning(f"读取收藏夹名称失败: {e}")
-
-            yield self.messaging.plain(event, f"📤 正在读取收藏夹「{folder_name}」...")
-            rows = await asyncio.to_thread(
-                self._collect_favorite_rows, client, folder_id
-            )
-            if not rows:
-                yield self.messaging.plain(event, f"ℹ️ 收藏夹「{folder_name}」为空，没有可导出的内容")
-                return
-
-            export_dir = self.data_dir / "exports"
-            safe_name = self.text.safe_filename(folder_name or f"收藏夹{folder_id}")
-            output_path = export_dir / f"JM收藏夹_{folder_id}_{safe_name}.csv"
-            await asyncio.to_thread(self._write_favorites_csv, output_path, rows)
-
-            size_kb = max(1, math.ceil(output_path.stat().st_size / 1024))
-            self.quota.record_file_send()
-            yield self.messaging.chain(event, [
-                Comp.Plain(f"📎 {output_path.name} ({size_kb}KB，共{len(rows)}本)\n"),
-                Comp.File(file=str(output_path), name=output_path.name),
-            ])
-            output_path.unlink(missing_ok=True)
-            await asyncio.sleep(self.send_interval)
-            yield self.messaging.plain(event, f"✅ 已导出收藏夹「{folder_name}」，共 {len(rows)} 本")
-        except Exception as e:
-            yield self.messaging.plain(event, self.client.handle_exception(e, "导出收藏夹"))
-
     # ========== /jmsub 订阅更新 ==========
     def _load_subscriptions(self):
         try:
@@ -2044,7 +1938,7 @@ class JmComicPlugin(Star):
                 )
                 return
             self.state.pending_exports.pop(key, None)
-            async for item in self._export_favorites(event, folder_id):
+            async for item in self.favorites.export(event, folder_id):
                 yield item
             return
         elif len(args) >= 2:
@@ -2087,15 +1981,15 @@ class JmComicPlugin(Star):
                     return
                 _, album_id = self.selection.normalize_target(args[2])
                 yield self.messaging.plain(event, f"⭐ 正在检查 JM{album_id} 的收藏状态...")
-                is_fav, _album = await self._favorite_state(client, album_id)
+                is_fav, _album = await self.favorites.favorite_state(client, album_id)
                 if is_fav:
                     yield self.messaging.plain(event, f"ℹ️ JM{album_id} 已经在收藏夹里了")
                 else:
                     await asyncio.to_thread(client.add_favorite_album, album_id, folder_id='0')
-                    self._clear_client_cache(client)
+                    self.favorites.clear_client_cache(client)
                     yield self.messaging.plain(event, f"✅ 已收藏 JM{album_id}")
                 try:
-                    yield self.messaging.plain(event, await self._render_favorites(client, '0'))
+                    yield self.messaging.plain(event, await self.favorites.render_favorites(client, '0'))
                 except Exception as list_err:
                     logger.warning(f"刷新收藏夹失败: {list_err}")
                 return
@@ -2110,15 +2004,15 @@ class JmComicPlugin(Star):
                     return
                 _, album_id = self.selection.normalize_target(args[2])
                 yield self.messaging.plain(event, f"🗑️ 正在检查 JM{album_id} 的收藏状态...")
-                is_fav, _album = await self._favorite_state(client, album_id)
+                is_fav, _album = await self.favorites.favorite_state(client, album_id)
                 if not is_fav:
                     yield self.messaging.plain(event, f"ℹ️ JM{album_id} 本来就不在收藏夹里，无需移除")
                 else:
                     await asyncio.to_thread(client.delete_favorite_album, album_id, folder_id='0')
-                    self._clear_client_cache(client)
+                    self.favorites.clear_client_cache(client)
                     yield self.messaging.plain(event, f"✅ 已移除收藏 JM{album_id}")
                 try:
-                    yield self.messaging.plain(event, await self._render_favorites(client, '0'))
+                    yield self.messaging.plain(event, await self.favorites.render_favorites(client, '0'))
                 except Exception as list_err:
                     logger.warning(f"刷新收藏夹失败: {list_err}")
                 return
@@ -2128,7 +2022,7 @@ class JmComicPlugin(Star):
                 folder_id = args[1]
                 yield self.messaging.plain(event, f"⭐ 获取收藏夹 [ID:{folder_id}] 的内容...")
                 yield self.messaging.plain(event,
-                    await self._render_favorites(
+                    await self.favorites.render_favorites(
                         client, folder_id, f"⭐ 收藏夹 [ID:{folder_id}]", 20
                     )
                 )
@@ -2143,7 +2037,7 @@ class JmComicPlugin(Star):
             if not folders:
                 # 如果没有文件夹列表，直接显示全部收藏
                 yield self.messaging.plain(event,
-                    await self._render_favorites(client, '0', "⭐ 我的收藏", 20)
+                    await self.favorites.render_favorites(client, '0', "⭐ 我的收藏", 20)
                 )
                 return
 
