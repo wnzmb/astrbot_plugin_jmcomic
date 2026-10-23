@@ -13,6 +13,11 @@
 - `/jmnext` 与“下一页/下页”：列表、搜索、评论、历史、排行榜发出后，可在 `page_turn_timeout` 秒内自动翻页；没有会话时静默或提示超时
 - `jmv` / `jmlist` 话列表页数：只对当前可见话（`jmv` 前 10 话、`jmlist` 当前页 10 话）请求 `/chapter` 详情补页数，结果写入 album `metadata.json`，后续查看不再重复请求
 - 话页数后台预取 `page_prefetch_pages`：默认 2 页、范围 0-5；当前页返回后后台继续预取之后 N 页，`0` 关闭；同一漫画只跑一个后台任务，前台/后台共享同一话的 inflight 请求
+- `/jm <id> -latest N`、`/jmzip <id> -latest N`：只下载最新 N 话，N 超过总话数时自动夹取；仅支持漫画 ID，与 `-c` 互斥
+- `/jmdisk`：查看下载缓存、ZIP/CSV 临时目录占用（管理员/号主）
+- `/jmclean [天数|all]`：清理图片缓存，保留 `metadata.json`（话页数缓存仍可用），30 秒内二次确认；活动下载目录自动跳过
+- `/jmtest`：诊断配置域名、代理和登录态（管理员/号主）
+- 最小单元测试 `tests/`：覆盖 parsing、selection、text、quota、pagination、maintenance，使用标准库 `unittest`
 - `page_turn_timeout` 配置：默认 60 秒，0 表示关闭自动翻页会话
 
 ### 🐛 修复

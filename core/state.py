@@ -18,6 +18,8 @@ class PluginState:
     pending_exports: dict[tuple, float] = field(default_factory=dict)
     # 评论总页数缓存：key -> 页数
     comment_page_cache: dict = field(default_factory=dict)
+    # /jmclean 二次确认：key=(sender, umo, days) -> 截止时间
+    pending_cleans: dict = field(default_factory=dict)
     # 订阅更新后台检查任务
     subscribe_task: Any = None
     subscription_lock: Any = None

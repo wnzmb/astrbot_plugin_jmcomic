@@ -35,10 +35,10 @@ class DownloadHandler:
         try:
             target, chapter_expr = self.selection.parse_download_args(args)
         except ValueError as e:
-            yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jm <漫画id|章节id> [-c 章节|章节:起页-止页]")
+            yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jm <漫画id|章节id> [-c 章节|章节:起页-止页] [-latest N]")
             return
         if not target:
-            yield self.messaging.plain(event, "用法：/jm <漫画id|章节id> [-c 章节|章节:起页-止页]")
+            yield self.messaging.plain(event, "用法：/jm <漫画id|章节id> [-c 章节|章节:起页-止页] [-latest N]")
             return
         async for message in self.consume(
             event, target, "pdf", chapter_expr
@@ -181,9 +181,10 @@ class DownloadHandler:
         args = event.message_str.split()
         if len(args) < 2:
             yield self.messaging.plain(event,
-                "用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页]\n"
+                "用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页] [-latest N]\n"
                 "示例：/jmzip 123456\n"
                 "      /jmzip 123456 -c 31-40\n"
+                "      /jmzip 123456 -latest 5\n"
                 "      /jmzip 123456 -c 5:201-\n"
                 "      /jmzip 123,456\n"
                 f"说明：多话按后台配置合并 ZIP（当前最多 {self.settings.zip_group_size} 话、"
@@ -194,10 +195,10 @@ class DownloadHandler:
         try:
             target, chapter_expr = self.selection.parse_download_args(args)
         except ValueError as e:
-            yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页]")
+            yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页] [-latest N]")
             return
         if not target:
-            yield self.messaging.plain(event, "用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页]")
+            yield self.messaging.plain(event, "用法：/jmzip <漫画id|章节id> [-c 章节|章节:起页-止页] [-latest N]")
             return
         async for message in self.consume(
             event, target, "zip", chapter_expr

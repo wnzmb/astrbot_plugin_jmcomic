@@ -85,11 +85,13 @@
 | `/jm` | `/jm <id> -c 5:201-` | 从第 5 话第 201 页继续（页段续传） |
 | `/jm` | `/jm <id> -c 5:201-400` | 只下第 5 话第 201-400 页 |
 | `/jm` | `/jm <id> -c 31:1-5,31:10-15` | 只下第 31 话的两个不连续页段，不包含第 6-9 页 |
+| `/jm` | `/jm <id> -latest 5` | 只下最新 5 话（仅漫画 ID） |
 | `/jm` | `/jm <章节id> -c 1:201-` | 章节 ID 目标的页段续传（话序号固定写 1） |
 | `/jmzip` | `/jmzip <漫画id>` | 下载整本，按 `zip_group_size` + `zip_page_limit` 合并 ZIP |
 | `/jmzip` | `/jmzip <章节id>` | 自动识别为单话，发一个 ZIP |
 | `/jmzip` | `/jmzip id1,id2,id3` | 批量下载，支持漫画/章节 ID 混合 |
 | `/jmzip` | `/jmzip <id> -c 31` / `-c 31-40` / `-c 31,35,40` | 只下指定话，按后台设置合并 ZIP |
+| `/jmzip` | `/jmzip <id> -latest 5` | 只下最新 5 话，按后台设置合并 ZIP |
 | `/jmzip` | `/jmzip <id> -c 5:201-` | ZIP 页段续传，从第 5 话第 201 页继续 |
 | `/jmzip` | `/jmzip <id> -c 31:1-5,31:10-15` | ZIP 只包含第 31 话两个不连续页段，不含第 6-9 页 |
 | `/jmzip` | `/jmzip <章节id> -c 1:201-` | 章节 ID 目标的 ZIP 页段续传（话序号固定写 1） |
@@ -99,6 +101,14 @@
 | `/jmstop` | `/jmstop` | 停止当前用户正在进行的下载 |
 | `/jmstop` | `/jmstop -all` | 管理员停止所有用户正在进行的下载 |
 | `/jmnext` | `/jmnext` | 翻到最近一次列表/搜索/评论/历史/排行榜的下一页 |
+
+### 🧹 维护
+
+| 指令 | 用法 | 功能 |
+|---|---|---|
+| `/jmdisk` | `/jmdisk` | 查看下载缓存、ZIP/CSV 临时目录占用（管理员/号主） |
+| `/jmclean` | `/jmclean [天数\|all]` | 清理图片缓存，保留 `metadata.json`；30 秒内二次确认 |
+| `/jmtest` | `/jmtest` | 诊断配置域名、代理和登录态（管理员/号主） |
 
 > **PDF/ZIP 合并规则已分开**：PDF 按 `pdf_page_limit` 页数分册，**整话优先，只有单话超过上限时才按页切分**（例如 500 页切成 200+200+100 三册）；显式页段只打包所选页段。ZIP 同时受 `zip_group_size` 话数和 `zip_page_limit` 页数约束，先到哪个就封口，单话超限也会按页切分。命令里的 `-g` 已取消，统一在插件配置页修改，批量或 `-c` 选话同样生效。
 
@@ -252,6 +262,12 @@
 - [测试流程](docs/测试流程.md)
 - [开发文档与修复日志](docs/开发文档与修复日志.md)
 - [重构计划](docs/REFACTOR_PLAN.md)
+
+单元测试（使用标准库 `unittest`，不依赖 pytest）：
+
+```powershell
+D:\Program Files\AstrBot\backend\python\python.exe -m unittest discover -s tests -v
+```
 
 ---
 

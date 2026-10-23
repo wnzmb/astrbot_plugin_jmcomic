@@ -104,6 +104,12 @@ class DownloadRunner:
                 failed.append(raw)
                 yield self.messaging.plain(event, f"⚠️ {target_label} 没有话")
                 continue
+            if kind == "photo" and chapter_expr and str(chapter_expr).startswith("latest:"):
+                failed.append(raw)
+                yield self.messaging.plain(
+                    event, f"⚠️ {target_label} -latest 仅支持漫画ID，不支持单章节ID"
+                )
+                continue
 
             if kind == "album" and chapter_expr:
                 selected, invalid, notes = self.selection.select_chapters(chapters, chapter_expr)

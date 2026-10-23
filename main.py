@@ -15,6 +15,7 @@ from .handlers.album import AlbumHandler
 from .handlers.download import DownloadHandler
 from .handlers.favorites import FavoritesHandler
 from .handlers.library import LibraryHandler
+from .handlers.maintenance import MaintenanceHandler
 from .handlers.navigation import NavigationHandler
 from .handlers.search import SearchHandler
 from .handlers.subscribe import SubscribeHandler
@@ -30,6 +31,7 @@ from .services.messaging import MessagingService
 from .services.packaging import PackagingService
 from .services.pagination import PageSessionService
 from .services.history import HistoryService
+from .services.maintenance import MaintenanceService
 from .services.progress import ActiveDownloadService
 from .services.quota import FileQuotaService
 from .services.search import SearchService
@@ -112,6 +114,10 @@ class JmComicPlugin(Star):
         )
         self.system = SystemHandler(
             self.settings, self.access, self.client, self.messaging,
+        )
+        self.maintenance = MaintenanceService(self.settings)
+        self.maintenance_handler = MaintenanceHandler(
+            self.settings, self.access, self.maintenance, self.state, self.messaging,
         )
         self.navigation = NavigationHandler(
             self.access, self.pagination, self.messaging,
@@ -277,6 +283,27 @@ class JmComicPlugin(Star):
     async def jm_domain(self, event: AstrMessageEvent):
         """查看 API 与 HTML 两套可用域名"""
         async for message in self.system.domain(event):
+            yield message
+
+    # ========== /jmtest 连通性诊断 ==========
+    @filter.command("jmtest")
+    async def jm_test(self, event: AstrMessageEvent):
+        """诊断配置域名、代理和登录态"""
+        async for message in self.system.test(event):
+            yield message
+
+    # ========== /jmdisk 磁盘占用 ==========
+    @filter.command("jmdisk")
+    async def jm_disk(self, event: AstrMessageEvent):
+        """查看下载缓存、ZIP/CSV 临时目录占用"""
+        async for message in self.maintenance_handler.disk(event):
+            yield message
+
+    # ========== /jmclean 清理图片缓存 ==========
+    @filter.command("jmclean")
+    async def jm_clean(self, event: AstrMessageEvent):
+        """清理图片缓存，保留 metadata.json"""
+        async for message in self.maintenance_handler.clean(event):
             yield message
 
     # ========== /jmupdate 查看更新日志 ==========

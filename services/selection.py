@@ -18,9 +18,10 @@ class SelectionService:
     # ========== 参数 / ID ==========
     @staticmethod
     def parse_download_args(args):
-        """解析 /jm <目标> [-c 话]；PDF/ZIP 合并参数由后台配置决定"""
+        """解析 /jm <目标> [-c 话] [-latest N]；PDF/ZIP 合并参数由后台配置决定"""
         target = args[1] if len(args) > 1 else ""
         chapter_expr = None
+        latest_count = None
         index = 2
         while index < len(args):
             token = args[index]
@@ -29,10 +30,22 @@ class SelectionService:
                     raise ValueError("-c 后面需要填写话或页段，例如 -c 31-40 或 -c 5:201-400")
                 chapter_expr = args[index + 1]
                 index += 2
+            elif token in ("-latest", "--latest"):
+                if index + 1 >= len(args):
+                    raise ValueError("-latest 后面需要填写话数，例如 -latest 5")
+                raw = str(args[index + 1]).strip()
+                if not raw.isdigit() or int(raw) <= 0:
+                    raise ValueError("-latest 需要大于 0 的整数，例如 -latest 5")
+                latest_count = int(raw)
+                index += 2
             elif token.startswith("-"):
                 raise ValueError(f"无法识别的选项：{token}")
             else:
                 raise ValueError(f"无法识别的参数：{token}")
+        if latest_count is not None:
+            if chapter_expr:
+                raise ValueError("-c 和 -latest 不能同时使用")
+            chapter_expr = f"latest:{latest_count}"
         return target, chapter_expr
 
     @staticmethod
@@ -187,6 +200,15 @@ class SelectionService:
         页段为 (起始页, 结束页或None)，页码从 1 开始；同一章节的
         不连续页段会保留为多条记录，便于分别打包。
         """
+        expr = str(expr) if expr is not None else ""
+        if expr.lower().startswith("latest:"):
+            raw = expr.split(":", 1)[1].strip()
+            if not raw.isdigit() or int(raw) <= 0:
+                return [], [expr], ["-latest 需要大于 0 的整数"]
+            count = min(int(raw), len(chapters))
+            if count <= 0:
+                return [], [expr], ["漫画没有可用话"]
+            expr = f"{len(chapters) - count + 1}-{len(chapters)}"
         all_items = [(i + 1, ch, None) for i, ch in enumerate(chapters)]
         if not expr:
             return all_items, [], []
