@@ -3,7 +3,6 @@ import io
 import csv
 import asyncio
 import zipfile
-import shutil
 import math
 import json
 import re
@@ -29,7 +28,8 @@ try:
     from jmcomic.jm_exception import DownloadCancelledException
 except ImportError:
     DownloadCancelledException = None
-from .core.downloader import ADVANCED_RETRY_CONFIG, ProgressDownloader
+from .core.config import PluginSettings
+from .core.downloader import ProgressDownloader
 from .core.models import PageUnit
 
 
@@ -53,75 +53,54 @@ class JmComicPlugin(Star):
         super().__init__(context)
         self.config = config or {}
 
-        # 路径配置：放到 plugin_data 下，插件更新不会丢
-        # 插件目录: .../data/plugins/astrbot_plugin_jmcomic/
-        # 往上两级到 data/，再进 plugin_data/astrbot_plugin_jmcomic/
-        plugin_dir = Path(os.path.dirname(__file__))
-        self.data_dir = plugin_dir.parent.parent / "plugin_data" / "astrbot_plugin_jmcomic"
-        self.download_base_dir = self.data_dir / "downloads"
-        self.zip_base_dir = self.data_dir / "zips"
-        self.download_base_dir.mkdir(parents=True, exist_ok=True)
-        self.zip_base_dir.mkdir(parents=True, exist_ok=True)
-
-        # 从插件配置读取参数
-        username = self.config.get("username", "")
-        password = self.config.get("password", "")
-        domain_str = self.config.get("domain", "")
-        # 支持多个域名，逗号分隔
-        custom_domains = [d.strip() for d in domain_str.split(",") if d.strip()]
-        photo_threads = int(self.config.get("photo_threads", 2))
-        image_threads = int(self.config.get("image_threads", 5))
-        self.per_page = int(self.config.get("per_page", 10))
-        self.allow_group = self.config.get("allow_group", True)
-        # 群白名单：逗号分隔的群号；为空时沿用 allow_group 的全局开关
-        group_raw = str(self.config.get("enabled_groups", "") or "")
-        group_raw = (
-            group_raw.replace("，", ",").replace(" ", ",")
-            .replace("\n", ",").replace("\t", ",")
+        # 配置解析与路径/option 构建都在 core.config，这里只做组装。
+        # 插件目录由 main.py 传入，避免 core 层用 __file__ 推算导致 data_dir 错两级。
+        self.settings = PluginSettings.from_config(
+            self.config, Path(os.path.dirname(__file__))
         )
-        self.enabled_groups = {x.strip() for x in group_raw.split(",") if x.strip()}
-        self.numeric_search_as_album = bool(self.config.get("numeric_search_as_album", False))
-        # 订阅更新检查间隔（秒），0 表示关闭后台检查；命令仍可正常增删订阅
-        self.subscribe_interval = max(0, int(self.config.get("subscribe_interval", 3600) or 0))
-        self.convert_enabled = self.config.get("convert_enabled", True)
-        self.convert_title = self.config.get("convert_title", True)
-        self.convert_tags = self.config.get("convert_tags", True)
-        self.convert_author = self.config.get("convert_author", True)
-        self.convert_comment = self.config.get("convert_comment", True)
-        self.sensitive_filter = self.config.get("sensitive_filter", True)
-        self.tease_enabled = self.config.get("tease_enabled", False)
-        self.cache_days = int(self.config.get("cache_days", 7))
-        self.comment_count = int(self.config.get("comment_count", 10))
-        self.history_max = max(0, int(self.config.get("history_max", 0) or 0))
-        self.dual_search = self.config.get("dual_search", True)
+        self.settings.prepare_directories()
 
-        # 号主与文件发送限额（方案B：账号类命令只允许号主）
-        owner_raw = str(self.config.get("owner_ids", "") or "")
-        owner_raw = owner_raw.replace("，", ",").replace(" ", ",").replace("\n", ",").replace("\t", ",")
-        self.owner_ids = {x.strip() for x in owner_raw.split(",") if x.strip()}
-        self.daily_file_limit = max(0, int(self.config.get("daily_file_limit", 0) or 0))
-        self.hourly_file_limit = max(0, int(self.config.get("hourly_file_limit", 0) or 0))
-        self.send_interval = max(0.0, float(self.config.get("send_interval", 1.5)))
-        # ZIP 按章数合并；PDF 按页数合并，两者互不影响。
-        # 旧配置 pdf_group_size 仅作为 ZIP 合并章数的兼容回退。
-        configured_group = int(
-            self.config.get("zip_group_size", self.config.get("pdf_group_size", 5)) or 0
-        )
-        self.zip_group_size = min(50, max(1, configured_group or 5))
-        configured_pages = int(self.config.get("pdf_page_limit", 100) or 0)
-        self.pdf_page_limit = min(2000, max(1, configured_pages or 100))
-        # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
-        configured_zip_pages = int(self.config.get("zip_page_limit", 300) or 0)
-        self.zip_page_limit = min(2000, max(0, configured_zip_pages))
-        # 翻页会话有效期：发送“下一页/下页”或 /jmnext 时使用
-        self.page_turn_timeout = max(0, int(self.config.get("page_turn_timeout", 60) or 0))
-        # 代理：use_proxy=false 时显式传空 dict，避免系统代理环境变量干扰
-        proxy_url = str(self.config.get("proxy_url", "") or "").strip()
-        self.use_proxy = bool(self.config.get("use_proxy", False)) and bool(proxy_url)
-        if bool(self.config.get("use_proxy", False)) and not proxy_url:
-            logger.warning("已开启 use_proxy，但 proxy_url 为空，本次按直连处理")
-        self.proxy_url = proxy_url
-        self.send_state_file = self.data_dir / "send_limits.json"
+        settings = self.settings
+        # 兼容层：现有命令实现仍读取插件实例上的这些属性，
+        # 后续按批次迁移到 service 后逐项删除。
+        self.data_dir = settings.data_dir
+        self.download_base_dir = settings.download_base_dir
+        self.zip_base_dir = settings.zip_base_dir
+        self.send_state_file = settings.send_state_file
+        self.history_file = settings.history_file
+        self.checkin_file = settings.checkin_file
+        self.subscription_file = settings.subscription_file
+        self.per_page = settings.per_page
+        self.allow_group = settings.allow_group
+        self.enabled_groups = settings.enabled_groups
+        self.numeric_search_as_album = settings.numeric_search_as_album
+        self.subscribe_interval = settings.subscribe_interval
+        self.convert_enabled = settings.convert_enabled
+        self.convert_title = settings.convert_title
+        self.convert_tags = settings.convert_tags
+        self.convert_author = settings.convert_author
+        self.convert_comment = settings.convert_comment
+        self.sensitive_filter = settings.sensitive_filter
+        self.tease_enabled = settings.tease_enabled
+        self.cache_days = settings.cache_days
+        self.comment_count = settings.comment_count
+        self.history_max = settings.history_max
+        self.dual_search = settings.dual_search
+        self.owner_ids = settings.owner_ids
+        self.daily_file_limit = settings.daily_file_limit
+        self.hourly_file_limit = settings.hourly_file_limit
+        self.send_interval = settings.send_interval
+        self.zip_group_size = settings.zip_group_size
+        self.pdf_page_limit = settings.pdf_page_limit
+        self.zip_page_limit = settings.zip_page_limit
+        self.page_turn_timeout = settings.page_turn_timeout
+        self.use_proxy = settings.use_proxy
+        self.proxy_url = settings.proxy_url
+        self.client_type = settings.client_type
+        self.custom_sensitive_map = settings.custom_sensitive_map
+        self.option = settings.option
+        self.order_map = settings.order_map
+
         self._id_type_cache = {}
         # 当前用户正在执行的下载任务，供 /jmstop 取消
         self._download_tasks: dict[str, set] = {}
@@ -135,145 +114,14 @@ class JmComicPlugin(Star):
         self._subscribe_task = None
         self._subscription_lock = None
 
-        # 客户端类型：api（默认，功能全）或 html（支持分类筛选）
-        self.client_type = self.config.get("client_type", "api").lower()
-        if self.client_type not in ("api", "html"):
-            self.client_type = "api"
-
-        # 解析用户自定义敏感词
-        self.custom_sensitive_map = {}
-        custom_sensitive = self.config.get("custom_sensitive", "")
-        for line in custom_sensitive.strip().split("\n"):
-            line = line.strip()
-            if "=" in line:
-                word, pinyin = line.split("=", 1)
-                word = word.strip()
-                pinyin = pinyin.strip()
-                if word and pinyin:
-                    self.custom_sensitive_map[word] = pinyin
-
-        # 启动时自动清理过期缓存
-        if self.cache_days > 0:
-            import time as _time
-            now = _time.time()
-            for item in self.download_base_dir.iterdir():
-                if item.is_dir() and not item.name.startswith('.'):
-                    mtime = item.stat().st_mtime
-                    if now - mtime > self.cache_days * 86400:
-                        shutil.rmtree(item, ignore_errors=True)
-                        logger.info(f"自动清理过期缓存: {item.name}")
-
-        # 动态生成 jmcomic 配置
-        # 根据用户配置选择客户端类型：
-        #   api  = API客户端（移动端接口），功能全：收藏添加、评论翻页、签到、用户信息，不支持分类筛选
-        #   html = HTML客户端（网页端接口），支持分类筛选，但收藏添加报错、评论不翻页、总数解析不出
-        if self.client_type == "api":
-            # 用户自定义域名优先，随后追加 jmcomic 内置的 API 域名作为兜底
-            api_domains = list(custom_domains)
-            for d in JmModuleConfig.DOMAIN_API_LIST:
-                if d not in api_domains:
-                    api_domains.append(d)
-            domain_conf = {"api": api_domains}
-        else:
-            # HTML 域名未配置时交给 jmcomic 自动获取，避免在代码里硬编码
-            domain_conf = {"html": custom_domains}
-
-        # 明确覆盖系统代理：未启用时传空 dict，启用时 http/https 都走同一代理。
-        proxy_map = {"http": self.proxy_url, "https": self.proxy_url} if self.use_proxy else {}
-
-        option_dict = {
-            "log": False,
-            "client": {
-                "impl": self.client_type,
-                "retry_times": 5,
-                "cache": True,
-                "domain": domain_conf,
-                "postman": {
-                    "meta_data": {
-                        "proxies": proxy_map,
-                        "timeout": 15
-                    }
-                }
-            },
-            "download": {
-                "cache": True,
-                "image": {
-                    "decode": True,
-                    "suffix": ".jpg"
-                },
-                "threading": {
-                    "image": image_threads,
-                    "photo": photo_threads
-                }
-            },
-            "dir_rule": {
-                # 目录保留 ID + 网站话数，标题写入 metadata.json，避免长标题
-                # 触发 Windows MAX_PATH；结构：JM{漫画id}/P{章节id}_第N话/图片
-                "rule": "Bd/JM{Aid}/P{Pid}_第{Palbum_index}话",
-                "normalize_zh": "zh-cn"
-            },
-            "plugins": {
-                "after_init": []
-            }
-        }
-
-        # 请求级域名轮询放在登录之前，确保登录与后续 client 都应用该策略。
-        # 同步客户端（搜索/详情/单章下载等）走 advanced_retry；
-        # 异步整本下载器自带域名轮询，外层仍有整任务 3 次重试。
-        option_dict["plugins"]["after_init"].append({
-            "plugin": "advanced_retry",
-            "kwargs": {
-                "retry_config": dict(ADVANCED_RETRY_CONFIG)
-            }
-        })
-
-        # 如果填了账号密码，加登录插件
-        if username and password:
-            option_dict["plugins"]["after_init"].append({
-                "plugin": "login",
-                "kwargs": {
-                    "username": username,
-                    "password": password
-                }
-            })
-
-        # 转成 yml 字符串加载
-        import yaml
-        option_str = yaml.dump(option_dict, allow_unicode=True)
-        self.option = jmcomic.create_option_by_str(option_str)
-        self.option.dir_rule.base_dir = str(self.download_base_dir)
-
         # 登录态客户端缓存：避免每次命令都重新登录
         self._cached_client = None
         self._client_lock = None  # 延迟创建，避免__init__时event_loop未就绪
 
-        # 排序方式映射
-        self.order_map = {
-            'mr': '最新',
-            'mv': '最多浏览',
-            'mp': '最多页数',
-            'tf': '最多收藏',
-            'tr': '评分最高',
-            'md': '最多评论',
-        }
-
         logger.info(
             f"JMComic 插件初始化完成 v0.7.8，客户端: {self.client_type.upper()}，"
-            f"镜像站: {custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
+            f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
-
-        # 历史记录文件
-        self.history_file = self.data_dir / "history.json"
-        if not self.history_file.exists():
-            self.history_file.write_text("{}", encoding="utf-8")
-
-        # 最近一次成功签到的本地记录（API 签到日历更新有延迟时兜底）
-        self.checkin_file = self.data_dir / "checkin_state.json"
-
-        # 订阅更新：按会话 umo 保存漫画快照
-        self.subscription_file = self.data_dir / "subscriptions.json"
-        if not self.subscription_file.exists():
-            self.subscription_file.write_text("{}", encoding="utf-8")
 
     def _check_permission(self, event: AstrMessageEvent):
         """检查群聊权限：allow_group 总开关 + enabled_groups 白名单"""
