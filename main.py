@@ -7,7 +7,7 @@ import math
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from .core.models import PageUnit
 from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
 from .services.messaging import MessagingService
+from .services.quota import FileQuotaService
 from .services.text import TextService
 
 class PageEventProxy:
@@ -104,6 +105,7 @@ class JmComicPlugin(Star):
         self.access = AccessService(self.settings)
         self.text = TextService(self.settings)
         self.messaging = MessagingService(self.settings, self.text)
+        self.quota = FileQuotaService(self.settings)
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self.client = JmClientManager(self.settings)
@@ -113,102 +115,6 @@ class JmComicPlugin(Star):
             f"镜像站: {settings.custom_domains}，代理: {'已启用' if self.use_proxy else '直连'}"
         )
 
-    def _load_send_times(self):
-        try:
-            data = json.loads(self.send_state_file.read_text(encoding="utf-8"))
-            times = data.get("times", []) if isinstance(data, dict) else []
-            result = []
-            for item in times:
-                try:
-                    result.append(datetime.strptime(str(item), "%Y-%m-%dT%H:%M:%S"))
-                except Exception:
-                    continue
-            return result
-        except Exception:
-            return []
-
-    def _save_send_times(self, times):
-        try:
-            now = datetime.now()
-            cutoff = now - timedelta(hours=24)
-            times = sorted(t for t in times if t >= cutoff)
-            payload = {"times": [t.strftime("%Y-%m-%dT%H:%M:%S") for t in times]}
-            self.send_state_file.write_text(json.dumps(payload), encoding="utf-8")
-        except Exception as e:
-            logger.debug(f"保存发送限额状态失败: {e}")
-
-    def _file_quota(self):
-        """返回今日/最近1小时的文件发送额度（本地统计，只统计本插件）
-
-        限额配置为 0 时表示不限制，remaining 返回 None。
-        """
-        now = datetime.now()
-        times = self._load_send_times()
-        hour_ago = now - timedelta(hours=1)
-        hour_count = sum(1 for t in times if t >= hour_ago)
-        day_count = sum(1 for t in times if t.date() == now.date())
-        return {
-            "hour_count": hour_count,
-            "hour_remaining": (
-                None if self.hourly_file_limit <= 0
-                else max(0, self.hourly_file_limit - hour_count)
-            ),
-            "day_count": day_count,
-            "day_remaining": (
-                None if self.daily_file_limit <= 0
-                else max(0, self.daily_file_limit - day_count)
-            ),
-        }
-
-    @staticmethod
-    def _quota_reached(quota):
-        """任一限额已用完；None 表示该限额不限制"""
-        return any(
-            quota[key] is not None and quota[key] <= 0
-            for key in ("hour_remaining", "day_remaining")
-        )
-
-    @staticmethod
-    def _quota_display(count, limit):
-        return f"{count}/不限" if limit <= 0 else f"{count}/{limit}"
-
-    @staticmethod
-    def _limit_text(limit):
-        return "不限" if limit <= 0 else str(limit)
-
-    def _zip_page_hint(self):
-        if self.zip_page_limit <= 0:
-            return "页数不限"
-        return f"每册不超过 {self.zip_page_limit} 页"
-
-    def _record_file_send(self, count=1):
-        now = datetime.now()
-        times = self._load_send_times()
-        times.extend([now] * max(0, count))
-        self._save_send_times(times)
-
-    def _quota_block_text(self, remaining_files=0):
-        q = self._file_quota()
-        if q["day_remaining"] is not None and q["day_remaining"] <= 0:
-            return (
-                f"⏳ 今日文件发送额度已用完（{q['day_count']}/{self.daily_file_limit}）。\n"
-                f"剩余 {remaining_files} 个文件未发送，请明天再试。\n"
-                "已下载的图片会保留缓存，重新执行命令不会重新下载。"
-            )
-        if q["hour_remaining"] is not None and q["hour_remaining"] <= 0:
-            return (
-                f"⏳ 最近1小时文件发送额度已用完（{q['hour_count']}/{self.hourly_file_limit}）。\n"
-                f"剩余 {remaining_files} 个文件未发送，请至少等待约 1 小时后再试。\n"
-                "已下载的图片会保留缓存，重新执行命令不会重新下载。"
-            )
-        return ""
-
-    def _quota_status_text(self):
-        q = self._file_quota()
-        return (
-            f"今日文件 {self._quota_display(q['day_count'], self.daily_file_limit)}，"
-            f"最近1小时 {self._quota_display(q['hour_count'], self.hourly_file_limit)}"
-        )
 
     def _album_dir_has_images(self, folder: Path) -> bool:
         """判断目录里是否真的有图片（避免把空目录/半成品当作已下载）"""
@@ -2000,9 +1906,9 @@ class JmComicPlugin(Star):
                 target_title = album_title or target_id
 
             for group_index, group in enumerate(groups):
-                quota = self._file_quota()
-                if self._quota_reached(quota):
-                    message = self._quota_block_text(len(groups) - group_index)
+                quota = self.quota.file_quota()
+                if self.quota.quota_reached(quota):
+                    message = self.quota.block_text(len(groups) - group_index)
                     remaining_expr = self._resume_expr(groups[group_index:])
                     command = "/jm" if output_format == "pdf" else "/jmzip"
                     resume_target = f"p{target_id}" if kind == "photo" else target_id
@@ -2098,7 +2004,7 @@ class JmComicPlugin(Star):
                     continue
 
                 size_mb = output_path.stat().st_size / 1024 / 1024
-                self._record_file_send()
+                self.quota.record_file_send()
                 total_files += 1
                 target_sent += 1
                 for unit, _folder, _images in chapter_entries:
@@ -2139,7 +2045,7 @@ class JmComicPlugin(Star):
             final_lines.append(
                 f"📊 下载完成：成功 {success}/{len(targets)} 个目标，"
                 f"发送 {total_files} 个文件，总计 {total_bytes / 1024 / 1024:.1f}MB\n"
-                f"{self._quota_status_text()}"
+                f"{self.quota.status_text()}"
             )
         if tease_text:
             final_lines.append(tease_text)
@@ -2736,9 +2642,9 @@ class JmComicPlugin(Star):
                     cache_days=self.cache_days,
                     pdf_page_limit=self.pdf_page_limit,
                     zip_group_size=self.zip_group_size,
-                    zip_page_text=self._zip_page_hint(),
-                    daily_limit_text=self._limit_text(self.daily_file_limit),
-                    hourly_limit_text=self._limit_text(self.hourly_file_limit),
+                    zip_page_text=self.settings.zip_page_hint(),
+                    daily_limit_text=self.quota.limit_text(self.daily_file_limit),
+                    hourly_limit_text=self.quota.limit_text(self.hourly_file_limit),
                 )
             )
             yield self.messaging.plain(event, help_text)
@@ -3105,7 +3011,7 @@ class JmComicPlugin(Star):
                 "      /jmzip 123456 -c 5:201-\n"
                 "      /jmzip 123,456\n"
                 f"说明：多话按后台配置合并 ZIP（当前最多 {self.zip_group_size} 话、"
-                f"{self._zip_page_hint()}）；单话目标发一个 ZIP"
+                f"{self.settings.zip_page_hint()}）；单话目标发一个 ZIP"
             )
             return
 
@@ -4050,7 +3956,7 @@ class JmComicPlugin(Star):
             await asyncio.to_thread(self._write_favorites_csv, output_path, rows)
 
             size_kb = max(1, math.ceil(output_path.stat().st_size / 1024))
-            self._record_file_send()
+            self.quota.record_file_send()
             yield self.messaging.chain(event, [
                 Comp.Plain(f"📎 {output_path.name} ({size_kb}KB，共{len(rows)}本)\n"),
                 Comp.File(file=str(output_path), name=output_path.name),
