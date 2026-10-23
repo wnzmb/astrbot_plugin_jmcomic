@@ -32,6 +32,7 @@ from .core.parsing import extract_id, parse_positive_page
 from .services.access import AccessService
 from .services.messaging import MessagingService
 from .services.history import HistoryService
+from .services.progress import ActiveDownloadService
 from .services.quota import FileQuotaService
 from .services.text import TextService
 
@@ -108,6 +109,7 @@ class JmComicPlugin(Star):
         self.messaging = MessagingService(self.settings, self.text)
         self.quota = FileQuotaService(self.settings)
         self.history = HistoryService(self.settings)
+        self.progress = ActiveDownloadService(self.state)
 
         # 登录态客户端缓存：避免每次命令都重新登录
         self.client = JmClientManager(self.settings)
@@ -625,43 +627,6 @@ class JmComicPlugin(Star):
         return ""
 
 
-    # ========== 下载进度 / 分页会话 ==========
-    def _set_active_download(self, user_id, task, target=""):
-        self.state.active_downloads[str(user_id)] = {
-            "task": task,
-            "album_id": str(target or ""),
-            "total": 0,
-            "done": 0,
-            "stage": "downloading",
-            "updated": time.monotonic(),
-        }
-
-    def _update_active_download(self, user_id, **kwargs):
-        state = self.state.active_downloads.get(str(user_id))
-        if not state:
-            return
-        state.update(kwargs)
-        state["updated"] = time.monotonic()
-
-    def _clear_active_download(self, user_id, task=None):
-        user_id = str(user_id)
-        state = self.state.active_downloads.get(user_id)
-        if state and (task is None or state.get("task") is task):
-            self.state.active_downloads.pop(user_id, None)
-
-    def _active_download(self, user_id):
-        state = self.state.active_downloads.get(str(user_id))
-        if not state:
-            return None
-        task = state.get("task")
-        if task is not None:
-            try:
-                if task.done():
-                    self.state.active_downloads.pop(str(user_id), None)
-                    return None
-            except Exception:
-                pass
-        return state
 
     @staticmethod
     def _page_session_key(event):
@@ -1758,7 +1723,7 @@ class JmComicPlugin(Star):
                     selected_total = max(0, int(getattr(album, "page_count", 0) or 0))
                 except (TypeError, ValueError):
                     selected_total = 0
-            self._update_active_download(
+            self.progress.update(
                 user_id,
                 album_id=album_id or target_id,
                 total=selected_total,
@@ -1789,7 +1754,7 @@ class JmComicPlugin(Star):
                 if album_dir is None:
                     failed.append(raw)
                     continue
-                self._update_active_download(
+                self.progress.update(
                     user_id, done=selected_total, total=selected_total, stage="packaging"
                 )
             else:
@@ -1814,7 +1779,7 @@ class JmComicPlugin(Star):
                     photo_key = str(getattr(photo, "photo_id", original_index))
                     if self._chapter_dir(photo, album_dir) is not None:
                         done_pages += selected_pages.get(photo_key, 0)
-                        self._update_active_download(user_id, done=done_pages)
+                        self.progress.update(user_id, done=done_pages)
                         continue
                     try:
                         await self._ensure_photo_downloaded(photo, album_dir)
@@ -1824,8 +1789,8 @@ class JmComicPlugin(Star):
                         )
                         continue
                     done_pages += selected_pages.get(photo_key, 0)
-                    self._update_active_download(user_id, done=done_pages)
-                self._update_active_download(
+                    self.progress.update(user_id, done=done_pages)
+                self.progress.update(
                     user_id, done=done_pages, stage="packaging"
                 )
 
@@ -2643,7 +2608,7 @@ class JmComicPlugin(Star):
         if task is not None:
             self.state.download_tasks.setdefault(user_id, set()).add(task)
             album_hint = str(target).strip() if str(target).strip().isdigit() else ""
-            self._set_active_download(user_id, task, album_hint)
+            self.progress.set_active(user_id, task, album_hint)
         try:
             async for message in self._run_download(
                 event, target, output_format, chapter_expr
@@ -2657,7 +2622,7 @@ class JmComicPlugin(Star):
                 tasks.discard(task)
                 if not tasks:
                     self.state.download_tasks.pop(user_id, None)
-            self._clear_active_download(user_id, task)
+            self.progress.clear(user_id, task)
 
     # ========== /jmstop 停止下载 ==========
     @filter.command("jmstop")
@@ -2685,7 +2650,7 @@ class JmComicPlugin(Star):
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
             return
-        state = self._active_download(event.get_sender_id())
+        state = self.progress.get_active(event.get_sender_id())
         if not state:
             yield self.messaging.plain(event, "当前还没有下载")
             return
