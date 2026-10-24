@@ -70,6 +70,9 @@ class SubscriptionService:
             self.state.subscription_lock = asyncio.Lock()
         async with self.state.subscription_lock:
             client = await asyncio.to_thread(self.client.get_client)
+            push_limit = max(
+                1, int(getattr(self.settings, "subscription_push_limit", 10) or 10)
+            )
             changed = False
             for umo, subs in list(data.items()):
                 if not isinstance(subs, dict):
@@ -97,14 +100,14 @@ class SubscriptionService:
                         lines = [
                             f"🔔 订阅更新：《{title}》新增 {len(new_photos)} 话"
                         ]
-                        for i, photo in enumerate(new_photos[:10], 1):
+                        for i, photo in enumerate(new_photos[:push_limit], 1):
                             chapter_name = self.text.safe_text(
                                 getattr(photo, "name", "") or "",
                                 self.settings.convert_title,
                             )
                             index = self.catalog.photo_position(photo, i)
                             lines.append(f"  第{index}话 {chapter_name}".rstrip())
-                        if len(new_photos) > 10:
+                        if len(new_photos) > push_limit:
                             lines.append(f"  ... 共 {len(new_photos)} 话")
                         lines.append("")
                         lines.append(f"/jmv {album_id} 查看详情")

@@ -7,6 +7,14 @@ __pycache__/
 # 工具缓存
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+.tox/
+
+# 覆盖率与本地日志
+.coverage
+coverage.xml
+htmlcov/
+*.log
 
 # 本机 AstrBot 运行残留（插件数据实际位于 <astrbot>/data/plugin_data/）
 data/

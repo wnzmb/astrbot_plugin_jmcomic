@@ -55,7 +55,7 @@
     "default": "",
     "description": "号主 ID",
     "obvious_hint": true,
-    "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。QQ 官方机器人填 openid，不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
+    "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
   },
   "photo_threads": {
     "type": "int",
@@ -79,6 +79,61 @@
     },
     "hint": "单话内同时下载的图片数量，默认 5。网络不稳定或经常失败时建议降低。"
   },
+  "request_timeout": {
+    "type": "int",
+    "default": 15,
+    "description": "请求超时（秒）",
+    "slider": {
+      "min": 5,
+      "max": 60,
+      "step": 5
+    },
+    "hint": "单次网络请求的超时时间，默认 15 秒。网络较慢可调到 30-60 秒；频繁超时不一定是数值太小，也可能是域名或代理不可用。"
+  },
+  "client_retry_times": {
+    "type": "int",
+    "default": 5,
+    "description": "请求重试次数",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "jmcomic 对单次请求的重试次数，默认 5。网络稳定可降低以减少等待，弱网可适当提高；过高会放大限流影响。"
+  },
+  "download_retry_times": {
+    "type": "int",
+    "default": 3,
+    "description": "下载重试次数",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "整本下载或单章下载遇到部分图片失败时，最多尝试几次（含首次），默认 3。已下载图片会复用缓存；填 1 表示不额外重试。"
+  },
+  "download_retry_interval": {
+    "type": "float",
+    "default": 3.0,
+    "description": "下载重试间隔（秒）",
+    "slider": {
+      "min": 0,
+      "max": 30,
+      "step": 0.5
+    },
+    "hint": "每次下载重试前的等待时间，默认 3 秒。网络被限流时可适当调大；填 0 表示立即重试。"
+  },
+  "login_ttl_minutes": {
+    "type": "int",
+    "default": 10,
+    "description": "登录态缓存（分钟）",
+    "slider": {
+      "min": 1,
+      "max": 120,
+      "step": 1
+    },
+    "hint": "登录成功后客户端缓存多久，默认 10 分钟；过期后下一条需要登录的命令会自动重登。频繁 401 可适当缩短。"
+  },
   "send_interval": {
     "type": "float",
     "default": 1.5,
@@ -89,6 +144,12 @@
       "step": 0.5
     },
     "hint": "每个 PDF/ZIP 发送后的等待秒数，默认 1.5 秒。调大可降低触发频率限制的概率，但发送更慢。"
+  },
+  "send_cover": {
+    "type": "bool",
+    "default": true,
+    "description": "详情默认发送封面",
+    "hint": "开启后 /jmv 默认下载并发送封面 PDF；关闭后所有详情都不发封面，单次仍可用 -pic 临时关闭。封面会转成 PDF 走文件通道，降低图片审核风险。"
   },
   "per_page": {
     "type": "int",
@@ -132,7 +193,13 @@
       "max": 2000,
       "step": 10
     },
-    "hint": "PDF 优先整话装册，达到上限就换下一册；单话超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。每个分册都会加漫画信息页。默认 200 页。"
+    "hint": "PDF 优先整话装册，达到上限就换下一册；单话超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。开启下方“包含信息页”时，每个分册都会加漫画信息页。默认 200 页。"
+  },
+  "include_info_page": {
+    "type": "bool",
+    "default": true,
+    "description": "包含漫画信息页",
+    "hint": "开启后 PDF 每个分册加一页漫画信息，ZIP 根目录附漫画信息.txt；关闭可略微减小文件。PDF 文档标题属性始终保留。"
   },
   "page_turn_timeout": {
     "type": "int",
@@ -144,6 +211,23 @@
       "step": 10
     },
     "hint": "列表、历史、评论、排行或搜索结果发出后，在多少秒内发送“下一页/下页”或 /jmnext 可自动翻页，默认 60；0 表示关闭自动翻页会话。"
+  },
+  "page_turn_keyword_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "响应文字“下一页”",
+    "hint": "开启后，在翻页会话有效期内发送纯文本“下一页/下页”即可翻页；关闭后只保留 /jmnext，避免普通聊天误触发。"
+  },
+  "confirm_timeout": {
+    "type": "int",
+    "default": 30,
+    "description": "危险操作确认有效期（秒）",
+    "slider": {
+      "min": 5,
+      "max": 120,
+      "step": 5
+    },
+    "hint": "二次确认的有效时间，默认 30 秒；适用于 /jmclean 清理缓存和 /jmfav export 导出收藏夹。超时后需重新执行命令。"
   },
   "page_prefetch_pages": {
     "type": "int",
@@ -166,6 +250,17 @@
       "step": 300
     },
     "hint": "后台每隔多少秒检查一次订阅漫画的新话并推送，默认 3600（1 小时）；0 表示关闭后台检查，只保留 /jmsub 的订阅增删。"
+  },
+  "subscription_push_limit": {
+    "type": "int",
+    "default": 10,
+    "description": "订阅推送话数上限",
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    },
+    "hint": "每次订阅推送最多列出多少条新增话，默认 10；超出只显示总数，避免一条消息过长。"
   },
   "use_proxy": {
     "type": "bool",
@@ -296,5 +391,16 @@
       "step": 1
     },
     "hint": "本插件每小时最多发送的文件数，默认 0（不限制）。超限后停止发送并提示用 -c 继续。"
+  },
+  "max_batch_targets": {
+    "type": "int",
+    "default": 0,
+    "description": "单次批量目标上限",
+    "slider": {
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "一条 /jm 或 /jmzip 最多允许的漫画/章节目标数，默认 0（不限制）。可设为 10-20 防止误触超大批量；超出会直接拒绝，不会开始下载。"
   }
 }

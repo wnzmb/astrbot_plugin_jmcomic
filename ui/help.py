@@ -2,8 +2,32 @@
 
 
 def build_help_text(settings, quota):
+    if settings.page_turn_keyword_enabled:
+        page_turn_hint = (
+            f"    也可在 {settings.page_turn_timeout} 秒内直接发送“下一页/下页”\n"
+        )
+    else:
+        page_turn_hint = "    纯文本“下一页/下页”已关闭，仍可用 /jmnext\n"
+
+    if settings.include_info_page:
+        package_info = (
+            "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性，每册都加漫画信息页"
+        )
+    else:
+        package_info = (
+            "📎 打包信息：已关闭信息页/漫画信息.txt，仅保留 PDF 标题属性"
+        )
+
+    cover_hint = (
+        "发送（命令 -pic 可临时关闭）"
+        if settings.send_cover
+        else "不发送（配置已关闭）"
+    )
+    max_batch = int(getattr(settings, "max_batch_targets", 0) or 0)
+    max_batch_hint = f"（每批最多 {max_batch} 个目标）" if max_batch > 0 else ""
+
     return (
-        "📖 漫画站插件 帮助 v0.7.8\n"
+        "📖 漫画站插件 帮助 v0.7.9\n"
         "━━━━━━━━━━━━━━━\n"
         "🔍 搜索：\n"
         "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -22,7 +46,7 @@ def build_help_text(settings, quota):
         "  /jm <漫画id>                下载整本，PDF按后台页数上限自动分册\n"
         "  /jm <章节id>                自动识别为单话，发一个PDF\n"
         "  /jm <章节id> -c 1:201-      章节ID页段续传（话序号固定写1）\n"
-        "  /jm id1,id2,id3             批量下载，支持漫画/章节ID混合\n"
+        "  /jm id1,id2,id3             批量下载，支持漫画/章节ID混合{max_batch_hint}\n"
         "  /jm <id> -c 31              只下第31话\n"
         "  /jm <id> -c 31-40           下第31到40话（范围倒置会自动纠正并提示）\n"
         "  /jm <id> -c 31,35,40        下指定话\n"
@@ -46,7 +70,7 @@ def build_help_text(settings, quota):
         "  /jmfav <文件夹id>           查看指定收藏夹\n"
         "  /jmfav add <漫画id>         添加收藏\n"
         "  /jmfav del <漫画id>         移除收藏\n"
-        "  /jmfav export [文件夹id]    导出收藏夹CSV（30秒内再输一次确认）\n"
+        "  /jmfav export [文件夹id]    导出收藏夹CSV（{confirm_timeout}秒内再输一次确认）\n"
         "━━━━━━━━━━━━━━━\n"
         "🔔 订阅：\n"
         "  /jmsub <漫画id>             订阅漫画更新\n"
@@ -61,24 +85,29 @@ def build_help_text(settings, quota):
         "  /jmdomain                   查看可用域名\n"
         "  /jmtest                     连通性诊断（域名/代理/登录）\n"
         "  /jmdisk                     查看缓存磁盘占用\n"
-        "  /jmclean [天数|all]         清理图片缓存（保留 metadata.json，30秒确认）\n"
+        "  /jmclean [天数|all]         清理图片缓存（保留 metadata.json，{confirm_timeout}秒确认）\n"
         "  /jmupdate                   查看更新日志\n"
         "  /jmrand [关键词]            随机抽一个\n"
         "  /jmnext                     翻到最近一次列表的下一页\n"
-        "    也可在 {page_turn_timeout} 秒内直接发送“下一页/下页”\n"
+        "{page_turn_hint}"
         "━━━━━━━━━━━━━━━\n"
         "📝 排序参数：mr(最新) mv(最多浏览) mp(最多页数) tf(最多收藏) tr(评分最高) md(最多评论)\n"
         "💡 搜索小提示：建议只打前几个关键词，打全容易因简繁差异漏结果\n"
         "💾 下载缓存：JM{{漫画id}}/P{{章节id}}_第N话/图片，标题存入 metadata.json，启动时清理 {cache_days} 天未访问的缓存目录（0=永久保留）\n"
-        "📎 打包信息：ZIP 附漫画信息.txt；PDF 写入标题属性，每册都加漫画信息页\n"
+        "📷 详情封面：{cover_hint}\n"
+        "{package_info}\n"
         "📄 PDF：每 {pdf_page_limit} 页一册（整话优先，单话超限按页切分）\n"
         "🗜️ ZIP：最多 {zip_group_size} 话/册，{zip_page_text}\n"
         "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
         "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）\n"
         "⏳ 文件限额：每日{daily_limit_text}、每小时{hourly_limit_text}（0=不限）".format(
+            max_batch_hint=max_batch_hint,
+            confirm_timeout=settings.confirm_timeout,
+            page_turn_hint=page_turn_hint,
+            cover_hint=cover_hint,
+            package_info=package_info,
             client_type=settings.client_type.upper(),
             per_page=settings.per_page,
-            page_turn_timeout=settings.page_turn_timeout,
             cache_days=settings.cache_days,
             pdf_page_limit=settings.pdf_page_limit,
             zip_group_size=settings.zip_group_size,

@@ -21,11 +21,23 @@ class JmClientManager:
     """单实例缓存已登录客户端，避免每个命令都重新登录。"""
 
     # 登录态不是永久的：实测 14:58 登录后，15:28 收藏夹接口已返回 401。
-    # 缓存超过 10 分钟就重新 login，仍在有效期内的命令不会重复登录。
-    LOGIN_TTL_SECONDS = 600
+    # 默认缓存 10 分钟就重新 login，可由 login_ttl_minutes 调整；
+    # 仍在有效期内的命令不会重复登录。
+    DEFAULT_LOGIN_TTL_MINUTES = 10
 
     def __init__(self, settings):
         self.settings = settings
+        self.login_ttl_seconds = max(
+            1,
+            int(
+                getattr(
+                    settings,
+                    "login_ttl_minutes",
+                    self.DEFAULT_LOGIN_TTL_MINUTES,
+                )
+                or self.DEFAULT_LOGIN_TTL_MINUTES
+            ),
+        ) * 60
         self._cached_client = None
         self._cached_at = 0.0
         # 订阅检查会通过 asyncio.to_thread(get_client) 在线程里登录，
@@ -57,7 +69,7 @@ class JmClientManager:
         with self._client_lock:
             if (
                 self._cached_client is not None
-                and time.monotonic() - self._cached_at < self.LOGIN_TTL_SECONDS
+                and time.monotonic() - self._cached_at < self.login_ttl_seconds
             ):
                 return self._cached_client
 

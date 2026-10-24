@@ -39,7 +39,7 @@ from .services.selection import SelectionService
 from .services.subscriptions import SubscriptionService
 from .services.text import TextService
 
-@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.8")
+@register("astrbot_plugin_jmcomic", "wnzmb", "漫画下载插件", "0.7.9")
 class JmComicPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig | dict[str, Any] | None = None):
         super().__init__(context)
@@ -135,7 +135,7 @@ class JmComicPlugin(Star):
         )
 
         logger.info(
-            f"JMComic 插件初始化完成 v0.7.8，客户端: {settings.client_type.upper()}，"
+            f"JMComic 插件初始化完成 v0.7.9，客户端: {settings.client_type.upper()}，"
             f"镜像站: {settings.custom_domains}，代理: {'已启用' if settings.use_proxy else '直连'}"
         )
 
@@ -184,6 +184,8 @@ class JmComicPlugin(Star):
     @filter.regex(r"^(?:下一页|下页)$")
     async def jm_next_keyword(self, event: AstrMessageEvent):
         """在有效期内发送“下一页/下页”自动翻页；无会话时静默。"""
+        if not self.settings.page_turn_keyword_enabled:
+            return
         async for message in self.navigation.next_keyword(event):
             yield message
 

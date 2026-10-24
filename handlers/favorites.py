@@ -24,7 +24,7 @@ class FavoritesHandler:
         /jmfav <文件夹id> → 查看文件夹里的内容
         /jmfav add <漫画id> → 把漫画加入收藏夹
         /jmfav del <漫画id> → 从收藏夹移除
-        /jmfav export [文件夹id] → 导出收藏夹 CSV（30 秒内二次确认）
+        /jmfav export [文件夹id] → 导出收藏夹 CSV（confirm_timeout 内二次确认）
         """
         if not self.access.check_permission(event):
             yield self.messaging.plain(event, self.access.permission_denied_text(event))
@@ -61,14 +61,17 @@ class FavoritesHandler:
                     return
                 folder_id = str(int(token))
 
-            # 二次确认：首次输入只提示，30 秒内再次输入相同命令才真正导出
+            # 二次确认：首次输入只提示，confirm_timeout 内再次输入相同命令才真正导出
+            confirm_timeout = max(
+                1, int(getattr(self.settings, "confirm_timeout", 30) or 30)
+            )
             user_key = (str(event.get_sender_id()), event.unified_msg_origin)
             action_key = f"export:{folder_id}"
             key = (*user_key, action_key)
             now = time.monotonic()
             self.state.pending_exports = {
                 k: v for k, v in self.state.pending_exports.items()
-                if now - v <= 30
+                if now - v <= confirm_timeout
                 and not (
                     k[0] == user_key[0]
                     and k[1] == user_key[1]
@@ -83,7 +86,7 @@ class FavoritesHandler:
                 yield self.messaging.plain(event,
                     f"⚠️ 即将导出收藏夹 [ID:{folder_id}] 为 CSV 文件。\n"
                     "导出会把账号收藏数据写入文件并发送到当前会话，请确认不是误触。\n"
-                    f"请在 30 秒内再次输入完全相同的命令确认：\n{command_text}"
+                    f"请在 {confirm_timeout} 秒内再次输入完全相同的命令确认：\n{command_text}"
                 )
                 return
             self.state.pending_exports.pop(key, None)

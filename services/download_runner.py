@@ -63,6 +63,14 @@ class DownloadRunner:
             return
 
         fmt_label = "PDF" if output_format == "pdf" else "ZIP"
+        max_targets = max(0, int(getattr(self.settings, "max_batch_targets", 0) or 0))
+        if max_targets > 0 and len(targets) > max_targets:
+            yield self.messaging.plain(
+                event,
+                f"❌ 一次最多处理 {max_targets} 个目标，当前 {len(targets)} 个。\n"
+                "请拆分命令后重试，或在插件配置中调整 max_batch_targets。",
+            )
+            return
 
         try:
             client = self.client.get_client()
@@ -355,19 +363,25 @@ class DownloadRunner:
                 image_paths = [
                     image for _, _, images in chapter_entries for image in images
                 ]
-                info_text = self.catalog.album_info_text(
-                    album, album_id, album_dir, chapter_entries
-                )
+                info_text = None
                 cover_text = None
                 pdf_metadata = None
+                include_info_page = bool(
+                    getattr(self.settings, "include_info_page", True)
+                )
+                if include_info_page:
+                    info_text = self.catalog.album_info_text(
+                        album, album_id, album_dir, chapter_entries
+                    )
                 if output_format == "pdf":
                     pdf_metadata = self.catalog.pdf_metadata(
                         album, album_id, album_dir, chapter_entries
                     )
                     # 每个 PDF 分册都带漫画信息页，便于单独辨认分册。
-                    cover_text = self.catalog.album_cover_text(
-                        album, album_id, album_dir, chapter_entries
-                    )
+                    if include_info_page:
+                        cover_text = self.catalog.album_cover_text(
+                            album, album_id, album_dir, chapter_entries
+                        )
                 try:
                     stem = self.packaging.file_stem_for_entries(
                         chapter_entries, album_id, album_title, album_dir

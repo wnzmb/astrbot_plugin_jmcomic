@@ -19,6 +19,17 @@ class DownloadService:
         self.cache = cache
         self.messaging = messaging
 
+    def _retry_attempts(self):
+        return max(
+            1, int(getattr(self.settings, "download_retry_times", 3) or 1)
+        )
+
+    def _retry_interval(self):
+        return max(
+            0.0,
+            float(getattr(self.settings, "download_retry_interval", 3.0) or 0.0),
+        )
+
     # ========== 整本下载 ==========
     def album_cached_pages(self, folder, chapters):
         total = 0
@@ -54,7 +65,7 @@ class DownloadService:
             holder["duration"] = 0.0
             return
 
-        attempts = 3
+        attempts = self._retry_attempts()
         for attempt in range(1, attempts + 1):
             ProgressDownloader._progress.pop(str(album_id), None)
             task = asyncio.create_task(
@@ -80,7 +91,7 @@ class DownloadService:
                         f"⚠️ 第{attempt}次下载有图片失败（{type(e).__name__}），"
                         "正在重试，已下载图片会复用缓存..."
                     )
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(self._retry_interval())
                     continue
                 if folder is not None and self.cache.album_dir_has_images(folder):
                     holder["dir"] = folder
@@ -155,16 +166,32 @@ class DownloadService:
         if folder is not None and await self.is_photo_complete(photo, folder):
             return folder, 0.0
 
-        try:
-            result = await jmcomic.download_photo_async(
-                photo.photo_id, self.settings.option
-            )
-        except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
-            folder = self.cache.chapter_dir(photo, album_dir)
-            if folder is not None and self.cache.album_dir_has_images(folder):
-                logger.warning(f"第{getattr(photo, 'photo_id', '')}话部分图片失败，先使用已下载图片: {e}")
-                return folder, 0.0
-            raise
+        attempts = self._retry_attempts()
+        result = None
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await jmcomic.download_photo_async(
+                    photo.photo_id, self.settings.option
+                )
+                break
+            except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
+                folder = self.cache.chapter_dir(photo, album_dir)
+                if attempt < attempts:
+                    logger.warning(
+                        f"第{getattr(photo, 'photo_id', '')}话第{attempt}次下载失败，"
+                        f"稍后重试: {e}"
+                    )
+                    await asyncio.sleep(self._retry_interval())
+                    continue
+                if folder is not None and self.cache.album_dir_has_images(folder):
+                    logger.warning(
+                        f"第{getattr(photo, 'photo_id', '')}话部分图片失败，"
+                        f"先使用已下载图片: {e}"
+                    )
+                    return folder, 0.0
+                raise
+        if result is None:
+            return None, 0.0
         detail = getattr(result, "detail", photo)
         if getattr(detail, "from_album", None) is None and getattr(photo, "from_album", None) is not None:
             detail.from_album = photo.from_album

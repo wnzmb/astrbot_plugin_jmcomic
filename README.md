@@ -10,7 +10,7 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.8-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.9-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -28,7 +28,7 @@
 - 📦 **智能打包** — PDF 按页数自动分册、ZIP 按话数 + 页数合并，文件名统一规范，分册带信息页
 - 📊 **实时进度** — `/jmnow` 查询当前下载进度（`-all` 管理员查看全部用户），`/jmstop` 停止任务
 - 🔄 **自动翻页** — 列表 / 搜索 / 评论 / 历史 / 排行榜，`/jmnext` 或"下一页/下页"一键翻页
-- 🔐 **账号功能** — 每日签到、收藏夹管理与 CSV 导出（号主专属，30 秒二次确认）
+- 🔐 **账号功能** — 每日签到、收藏夹管理与 CSV 导出（号主专属，可配置二次确认）
 - 🔔 **更新订阅** — `/jmsub` 后台检查新话并主动推送
 - 🛡️ **安全防护** — 敏感词自动转拼音、QQ 文件限额、群白名单、HTTP/SOCKS5 代理与请求级域名重试
 - ⚙️ **高度可配置** — 所有参数均可在 AstrBot 管理面板配置页自定义，支持滑杆 / 下拉 / 代码编辑器
@@ -46,18 +46,25 @@
    - 镜像站域名：你能访问的镜像站（支持多个，用英文逗号分隔，自动切换可用的）
    - 号主ID `owner_ids`：JM 账号号主的发送者 ID，多个用英文逗号分隔；签到、收藏、用户信息只允许号主使用。QQ 官方机器人填 openid，可先发 `/jmwhoami` 查看
    - 群聊白名单 `enabled_groups`：只允许这些群号使用插件，英文逗号分隔；留空表示不限制。关闭 `allow_group` 时所有群禁用，私聊不受影响
-   - 下载并发数：根据自己网络调整
+   - 下载并发数、请求超时 `request_timeout`（默认 15 秒）、请求重试 `client_retry_times`（默认 5 次）：根据自己网络调整
+   - 下载重试 `download_retry_times` / `download_retry_interval`：默认最多尝试 3 次、每次间隔 3 秒；已下载图片会复用缓存
+   - 登录态缓存 `login_ttl_minutes`：默认 10 分钟；过期后下一条需要登录的命令会自动重登
    - 分页每页条数 `per_page`：搜索、`jmlist`、`jmhis` 统一使用，默认 10 条，可改 5-20
    - jms 纯数字查详情 `numeric_search_as_album`：默认开启，`/jms 123456` 直接显示漫画详情；关闭后按普通搜索词处理
    - 订阅检查间隔 `subscribe_interval`：默认 3600 秒（1 小时）；填 `0` 关闭后台检查，只保留 `/jmsub` 的订阅增删
+   - 订阅推送话数 `subscription_push_limit`：每条推送最多列出多少条新增话，默认 10，超出只显示总数
    - 文件发送限额：默认每日 0、每小时 0（不限制）；QQ 官方机器人通常限制每日 100 个、每小时 50 个，可按需自行填写。插件会本地计数并在超限时提示
+   - 单次批量目标上限 `max_batch_targets`：默认 0（不限制）；设为 10-20 可防止一条命令误触过多下载
    - ZIP 合并话数 `zip_group_size`：默认 5，表示最多 5 话合并一个 ZIP；填 1 表示每话一个
    - ZIP 每册页数上限 `zip_page_limit`：默认 300 页，单话超限时按页切分；填 `0` 表示只按话数合并
    - PDF 每册页数上限 `pdf_page_limit`：默认 200 页，整话优先，单话超限时按页切分；每个分册都带漫画信息页
+   - 漫画信息页 `include_info_page`：默认开启；关闭后 PDF 不加信息首页、ZIP 不附 `漫画信息.txt`，PDF 标题属性仍保留
    - 翻页会话有效期 `page_turn_timeout`：默认 60 秒；列表、搜索、评论、历史、排行榜发出后，在此时间内发送“下一页/下页”或 `/jmnext` 可自动翻页；填 `0` 关闭自动翻页会话
+   - 文字翻页开关 `page_turn_keyword_enabled`：默认开启；关闭后不再响应纯文本“下一页/下页”，`/jmnext` 仍可用
+   - 危险操作确认有效期 `confirm_timeout`：默认 30 秒；`/jmclean` 和 `/jmfav export` 需在此时间内再次发送相同命令
    - 话页数后台预取 `page_prefetch_pages`：默认 2 页，范围 0-5；`jmv`/`jmlist` 当前页显示后，后台继续预取之后 N 页的话页数，`0` 关闭
+   - 详情封面 `send_cover`：默认开启；关闭后 `/jmv` 不再发送封面，单次仍可用 `-pic` 临时关闭
    - 代理 `use_proxy` / `proxy_url`：默认关闭直连；开启后填写 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`
-   - 下载重试无需配置：同步请求走域名轮询，整本下载再保留 3 次外层任务重试，已下载图片自动复用缓存
    - 下载历史保留条数 `history_max`：默认 0，填 `0` 表示保留所有历史
    - 自定义敏感词 `custom_sensitive`：每行 `原文=替换拼音`，长词优先匹配；默认留空，留空时只保留内置的 `X交`/`X乳` 规则；填写的词会在内置规则之外追加
 
@@ -109,7 +116,7 @@
 |---|---|---|
 | `/jm` | `/jm <漫画id>` | 下载整本，按 `pdf_page_limit` 自动分册 |
 | `/jm` | `/jm <章节id>` | 自动识别为单话，发一个 PDF |
-| `/jm` | `/jm id1,id2,id3` | 批量下载，支持漫画/章节 ID 混合 |
+| `/jm` | `/jm id1,id2,id3` | 批量下载，支持漫画/章节 ID 混合；受 `max_batch_targets` 限制（0=不限） |
 | `/jm` | `/jm <id> -c 31` | 只下第 31 话 |
 | `/jm` | `/jm <id> -c 31-40` | 下第 31 到 40 话，按后台页数上限分册 |
 | `/jm` | `/jm <id> -c 31,35,40` | 下指定话，按后台页数上限分册 |
@@ -120,7 +127,7 @@
 | `/jm` | `/jm <章节id> -c 1:201-` | 章节 ID 目标的页段续传（话序号固定写 1） |
 | `/jmzip` | `/jmzip <漫画id>` | 下载整本，按 `zip_group_size` + `zip_page_limit` 合并 ZIP |
 | `/jmzip` | `/jmzip <章节id>` | 自动识别为单话，发一个 ZIP |
-| `/jmzip` | `/jmzip id1,id2,id3` | 批量下载，支持漫画/章节 ID 混合 |
+| `/jmzip` | `/jmzip id1,id2,id3` | 批量下载，支持漫画/章节 ID 混合；受 `max_batch_targets` 限制（0=不限） |
 | `/jmzip` | `/jmzip <id> -c 31` / `-c 31-40` / `-c 31,35,40` | 只下指定话，按后台设置合并 ZIP |
 | `/jmzip` | `/jmzip <id> -latest 5` | 只下最新 5 话，按后台设置合并 ZIP |
 | `/jmzip` | `/jmzip <id> -c 5:201-` | ZIP 页段续传，从第 5 话第 201 页继续 |
@@ -138,12 +145,12 @@
 | 指令 | 用法 | 功能 |
 |---|---|---|
 | `/jmdisk` | `/jmdisk` | 查看下载缓存、ZIP/CSV 临时目录占用（管理员/号主） |
-| `/jmclean` | `/jmclean [天数\|all]` | 清理图片缓存，保留 `metadata.json`；30 秒内二次确认 |
+| `/jmclean` | `/jmclean [天数\|all]` | 清理图片缓存，保留 `metadata.json`；`confirm_timeout` 秒内二次确认 |
 | `/jmtest` | `/jmtest` | 诊断配置域名、代理和登录态（管理员/号主） |
 
 > **PDF/ZIP 合并规则已分开**：PDF 按 `pdf_page_limit` 页数分册，**整话优先，只有单话超过上限时才按页切分**（例如 500 页切成 200+200+100 三册）；显式页段只打包所选页段。ZIP 同时受 `zip_group_size` 话数和 `zip_page_limit` 页数约束，先到哪个就封口，单话超限也会按页切分。命令里的 `-g` 已取消，统一在插件配置页修改，批量或 `-c` 选话同样生效。
 
-> **下载重试**：同步请求使用 jmcomic 的请求级域名轮询，单次请求会按历史失败次数排序域名并自动切换；整本下载仍保留 3 次外层任务重试，已下载图片会复用缓存，不会从头重下。
+> **下载重试**：同步请求使用 jmcomic 的请求级域名轮询，单次请求会按历史失败次数排序域名并自动切换；整本/单章下载失败时还会按 `download_retry_times` 和 `download_retry_interval` 重试，已下载图片会复用缓存，不会从头重下。
 >
 > **缓存复用**：整本、选话、批量下载都会先查图片缓存；命中时直接复用，不重复下载。为压缩消息数量，不再单独发送缓存命中提示。
 >
@@ -166,7 +173,7 @@
 
 `P` 大写只表示网站话序号（该话在章节列表中的位置，从 1 起，3 位补零），`p` 小写只表示页码。下载文件统一以漫画 ID 开头，不再使用章节 ID 或站点标题作为文件名。同一话的多个不连续页段会分别保留（如 `31:1-5,31:10-15` 不会带上第 6-9 页）；连续话用 `P031-P035`，非连续话用 `P031,P035,P040`，避免把只含 3 话的文件标成 `P031-P040`。ZIP 内每个话目录名统一为 `P{章节id}_第N话`，页段目录追加 `_p起始-结束`，单话 ZIP 也会包一层目录。缓存目录为 `JM{漫画id}/P{章节id}_第N话/图片`，标题保存在同目录的 `metadata.json`。
 
-打包时会把标题一起带上：ZIP 根目录附 `漫画信息.txt`；PDF 写入文档属性，并给**每个分册**都加一张漫画信息页。信息页只用于展示，不计入 `pdf_page_limit` 的图片页数。找不到中文字体时会跳过信息页，但 PDF 文档属性仍会写入。
+打包时会把标题一起带上：开启 `include_info_page`（默认）后，ZIP 根目录附 `漫画信息.txt`，PDF 写入文档属性，并给**每个分册**都加一张漫画信息页；关闭后不生成信息页/`漫画信息.txt`，但 PDF 文档属性仍保留。信息页只用于展示，不计入 `pdf_page_limit` 的图片页数。找不到中文字体时会跳过信息页，但 PDF 文档属性仍会写入。
 
 ### ⭐ 账号（仅号主）
 
@@ -180,7 +187,7 @@
 | `/jmfav` | `/jmfav <文件夹id>` | 查看指定收藏夹内容 |
 | `/jmfav` | `/jmfav add <漫画id>` | 添加收藏（先检查是否已收藏，避免反向操作） |
 | `/jmfav` | `/jmfav del <漫画id>` | 移除收藏（先检查是否已收藏） |
-| `/jmfav` | `/jmfav export [文件夹id]` | 导出收藏夹 CSV；首次输入提示，30 秒内再次输入相同命令才执行（无加密/无密码） |
+| `/jmfav` | `/jmfav export [文件夹id]` | 导出收藏夹 CSV；首次输入提示，`confirm_timeout` 秒内再次输入相同命令才执行（无加密/无密码） |
 
 ### 🔔 订阅更新
 
@@ -192,7 +199,7 @@
 | `/jmsub` | `/jmsub list` | 查看当前会话的订阅 |
 | `/jmsub` | `/jmsub del <漫画id>` | 取消订阅 |
 
-> 后台默认每 `subscribe_interval` 秒检查一次（默认 3600 秒，0=关闭）；用话 `photo_id` 集合对比新增话，每本之间间隔 2 秒。QQ 官方机器人平台可能不支持主动推送，失败时会记录日志并在下轮重试。
+> 后台默认每 `subscribe_interval` 秒检查一次（默认 3600 秒，0=关闭）；用话 `photo_id` 集合对比新增话，每条推送最多列出 `subscription_push_limit` 条（默认 10），每本之间间隔 2 秒。QQ 官方机器人平台可能不支持主动推送，失败时会记录日志并在下轮重试。
 
 ### 📊 其他
 
@@ -244,7 +251,7 @@
 | `-work` | 去掉作品行 |
 | `-role` | 去掉人物行（查询提示显示“不带角色”） |
 | `-tag` | 去掉标签行 |
-| `-pic` | 不发送封面（默认转为 PDF 文件发送，避免 QQ 图片审核） |
+| `-pic` | 不发送封面（默认发送；`send_cover=false` 时全局不发送。封面转为 PDF 文件发送，避免 QQ 图片审核） |
 
 > v0.7.1 起详情不再显示简介和相关推荐，`-desc`、`-related` 选项已移除。v0.7.2 起无法识别的选项会直接提示，不会静默忽略。v0.7.3 起下载支持页段续传（`-c 5:201-`）。v0.7.4 起文件名不再拼接漫画标题，并修复长标题路径、批量重复文件、部分缓存等问题。v0.7.5 起缓存目录只保留 ID，标题写入 `metadata.json`，并随 ZIP/PDF 一起打包。v0.7.6 起同一话的多个不连续页段会分别保留，并修复章节ID提示缺少父漫画ID。v0.7.7 起整本下载进度按 10% 步进 + 60 秒心跳推送，新增 HTTP/SOCKS5 代理与请求级域名重试。v0.7.8 起新增群白名单、`jms` 纯数字查详情、收藏夹 CSV 导出（30 秒二次确认）和 `/jmsub` 订阅更新推送；分册命名统一为 `JM{漫画id}_P{话序号}`，每个 PDF 分册都带信息页，缓存/ZIP 目录改为 `P{章节id}_第N话`，`jmlist`/`jmhis` 统一走 `per_page`。同一版本后续更新：移除可见进度条，新增 `/jmnow` 查询当前下载进度；`/jm`、`/jmzip` 压缩状态消息；`/jmv`、`/jmlist` 的话列表追加每话页数；新增 `/jmnext` 和“下一页/下页”自动翻页（`page_turn_timeout` 秒内有效）；`/jmnow`、`/jmstop` 支持管理员 `-all` 查看/停止所有用户下载。
 
@@ -267,7 +274,7 @@
 - 第 3 页 = 第 21-30 条
 - 以此类推
 
-回复最后会自动带下一页的指令，直接复制发送就行；也可以在 `page_turn_timeout` 秒内直接发送“下一页/下页”，或使用 `/jmnext`。翻页会话按用户和会话隔离，超时后需重新执行原列表命令。
+回复最后会自动带下一页的指令，直接复制发送就行；也可以在 `page_turn_timeout` 秒内直接发送“下一页/下页”，或使用 `/jmnext`。文字翻页可用 `page_turn_keyword_enabled` 单独关闭，关闭后 `/jmnext` 仍可用。翻页会话按用户和会话隔离，超时后需重新执行原列表命令。
 
 ---
 
@@ -297,7 +304,7 @@
 单元测试（使用标准库 `unittest`，不依赖 pytest）：
 
 ```powershell
-D:\Program Files\AstrBot\backend\python\python.exe -m unittest discover -s tests -v
+~\AstrBot\backend\python\python.exe -m unittest discover -s tests -v
 ```
 
 ---

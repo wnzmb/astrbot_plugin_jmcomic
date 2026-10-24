@@ -1,5 +1,18 @@
 # 更新日志
 
+## v0.7.9 - 2026-10-24
+
+### ✨ 新增
+- 新增 11 个配置项：`request_timeout`（请求超时）、`client_retry_times`（请求重试）、`download_retry_times`（下载重试次数）、`download_retry_interval`（下载重试间隔）、`login_ttl_minutes`（登录态缓存）、`max_batch_targets`（单次批量目标上限）、`send_cover`（详情默认发送封面）、`confirm_timeout`（危险操作确认有效期）、`subscription_push_limit`（订阅推送话数上限）、`page_turn_keyword_enabled`（文字“下一页”开关）、`include_info_page`（PDF 信息页 / ZIP 漫画信息.txt）
+- `max_batch_targets` 默认 0 表示不限制；超限时直接拒绝批量命令，不开始下载
+- `send_cover=false` 时 `/jmv` 全局不发送封面，单次 `-pic` 选项仍然有效
+- `include_info_page=false` 时 PDF 不加信息首页、ZIP 不附 `漫画信息.txt`，PDF 文档标题属性仍保留
+
+### 🔧 变更
+- `/jmclean` 与 `/jmfav export` 的二次确认时长改由 `confirm_timeout` 控制，默认仍为 30 秒
+- 登录态、请求超时/重试、下载重试和订阅推送条数不再硬编码，均可在配置页调整
+- `page_turn_keyword_enabled=false` 只关闭纯文本“下一页/下页”，`/jmnext` 始终可用
+
 ## v0.7.8 - 2026-10-22
 
 ### ✨ 新增

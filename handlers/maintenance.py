@@ -113,6 +113,9 @@ class MaintenanceHandler:
 
         key = self._clean_key(event, days)
         now = time.time()
+        confirm_timeout = max(
+            1, int(getattr(self.settings, "confirm_timeout", 30) or 30)
+        )
         pending = self.state.pending_cleans.get(key)
         if pending and pending > now:
             self.state.pending_cleans.pop(key, None)
@@ -137,7 +140,7 @@ class MaintenanceHandler:
             yield self.messaging.plain(event, text)
             return
 
-        # 第一次只预览，30 秒内再次发送相同命令才真正删除
+        # 第一次只预览，confirm_timeout 内再次发送相同命令才真正删除
         active = self._active_album_ids()
         try:
             preview = await asyncio.to_thread(
@@ -146,7 +149,7 @@ class MaintenanceHandler:
         except Exception as e:
             yield self.messaging.plain(event, f"❌ 统计失败：{e}")
             return
-        self.state.pending_cleans[key] = now + 30
+        self.state.pending_cleans[key] = now + confirm_timeout
         text = (
             f"🧹 准备清理 {days_label}的图片缓存\n"
             f"预计：{preview['files']} 个图片 / "
@@ -158,5 +161,5 @@ class MaintenanceHandler:
             text += f"\n⏭️ 活动下载目录将跳过：{', '.join(skipped)}"
         if not preview["files"]:
             text += "\n\n当前没有符合条件的图片。"
-        text += "\n\n30 秒内再次发送相同命令确认清理。"
+        text += f"\n\n{confirm_timeout} 秒内再次发送相同命令确认清理。"
         yield self.messaging.plain(event, text)

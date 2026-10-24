@@ -59,6 +59,8 @@ def _build_option(
     image_threads: int,
     use_proxy: bool,
     proxy_url: str,
+    request_timeout: int,
+    client_retry_times: int,
     download_base_dir: Path,
 ):
     """按配置动态生成 jmcomic option。"""
@@ -83,13 +85,13 @@ def _build_option(
         "log": False,
         "client": {
             "impl": client_type,
-            "retry_times": 5,
+            "retry_times": client_retry_times,
             "cache": True,
             "domain": domain_conf,
             "postman": {
                 "meta_data": {
                     "proxies": proxy_map,
-                    "timeout": 15
+                    "timeout": request_timeout
                 }
             }
         },
@@ -160,11 +162,17 @@ class PluginSettings:
     custom_domains: list[str]
     photo_threads: int
     image_threads: int
+    request_timeout: int
+    client_retry_times: int
+    download_retry_times: int
+    download_retry_interval: float
+    login_ttl_minutes: int
     per_page: int
     allow_group: bool
     enabled_groups: set[str]
     numeric_search_as_album: bool
     subscribe_interval: int
+    subscription_push_limit: int
     convert_enabled: bool
     convert_title: bool
     convert_tags: bool
@@ -180,12 +188,17 @@ class PluginSettings:
     owner_ids: set[str]
     daily_file_limit: int
     hourly_file_limit: int
+    max_batch_targets: int
+    send_cover: bool
     send_interval: float
     zip_group_size: int
     pdf_page_limit: int
     zip_page_limit: int
+    include_info_page: bool
     page_turn_timeout: int
+    page_turn_keyword_enabled: bool
     page_prefetch_pages: int
+    confirm_timeout: int
 
     use_proxy: bool
     proxy_url: str
@@ -219,6 +232,34 @@ class PluginSettings:
         custom_domains = [d.strip() for d in domain_str.split(",") if d.strip()]
         photo_threads = int(config.get("photo_threads", 2))
         image_threads = int(config.get("image_threads", 5))
+        request_timeout = min(60, max(5, int(config.get("request_timeout", 15) or 15)))
+        client_retry_times = min(
+            10, max(1, int(config.get("client_retry_times", 5) or 5))
+        )
+        download_retry_times = min(
+            10, max(1, int(config.get("download_retry_times", 3) or 3))
+        )
+        download_retry_interval = min(
+            30.0,
+            max(0.0, float(config.get("download_retry_interval", 3.0) or 0.0)),
+        )
+        login_ttl_minutes = min(
+            120, max(1, int(config.get("login_ttl_minutes", 10) or 10))
+        )
+        max_batch_targets = min(
+            50, max(0, int(config.get("max_batch_targets", 0) or 0))
+        )
+        send_cover = bool(config.get("send_cover", True))
+        confirm_timeout = min(
+            120, max(5, int(config.get("confirm_timeout", 30) or 30))
+        )
+        subscription_push_limit = min(
+            30, max(1, int(config.get("subscription_push_limit", 10) or 10))
+        )
+        page_turn_keyword_enabled = bool(
+            config.get("page_turn_keyword_enabled", True)
+        )
+        include_info_page = bool(config.get("include_info_page", True))
 
         # 客户端类型：api（默认，功能全）或 html（支持分类筛选）
         client_type = config.get("client_type", "api").lower()
@@ -249,6 +290,8 @@ class PluginSettings:
             image_threads=image_threads,
             use_proxy=use_proxy,
             proxy_url=proxy_url,
+            request_timeout=request_timeout,
+            client_retry_times=client_retry_times,
             download_base_dir=download_base_dir,
         )
 
@@ -266,6 +309,11 @@ class PluginSettings:
             custom_domains=custom_domains,
             photo_threads=photo_threads,
             image_threads=image_threads,
+            request_timeout=request_timeout,
+            client_retry_times=client_retry_times,
+            download_retry_times=download_retry_times,
+            download_retry_interval=download_retry_interval,
+            login_ttl_minutes=login_ttl_minutes,
             per_page=int(config.get("per_page", 10)),
             allow_group=config.get("allow_group", True),
             # 群白名单：逗号分隔的群号；为空时沿用 allow_group 的全局开关
@@ -273,6 +321,7 @@ class PluginSettings:
             numeric_search_as_album=bool(config.get("numeric_search_as_album", False)),
             # 订阅更新检查间隔（秒），0 表示关闭后台检查；命令仍可正常增删订阅
             subscribe_interval=max(0, int(config.get("subscribe_interval", 3600) or 0)),
+            subscription_push_limit=subscription_push_limit,
             convert_enabled=config.get("convert_enabled", True),
             convert_title=config.get("convert_title", True),
             convert_tags=config.get("convert_tags", True),
@@ -288,16 +337,21 @@ class PluginSettings:
             owner_ids=_split_set(config.get("owner_ids", "")),
             daily_file_limit=max(0, int(config.get("daily_file_limit", 0) or 0)),
             hourly_file_limit=max(0, int(config.get("hourly_file_limit", 0) or 0)),
+            max_batch_targets=max_batch_targets,
+            send_cover=send_cover,
             send_interval=max(0.0, float(config.get("send_interval", 1.5))),
             zip_group_size=min(50, max(1, configured_group or 5)),
             pdf_page_limit=min(2000, max(1, configured_pages or 100)),
             zip_page_limit=min(2000, max(0, configured_zip_pages)),
+            include_info_page=include_info_page,
             # 翻页会话有效期：发送“下一页/下页”或 /jmnext 时使用
             page_turn_timeout=max(0, int(config.get("page_turn_timeout", 60) or 0)),
+            page_turn_keyword_enabled=page_turn_keyword_enabled,
             # 后台预取页数：jmv/jmlist 当前页之后预取 N 页话页数，0=关闭
             page_prefetch_pages=min(
                 5, max(0, int(config.get("page_prefetch_pages", 2) or 0))
             ),
+            confirm_timeout=confirm_timeout,
             use_proxy=use_proxy,
             proxy_url=proxy_url,
             client_type=client_type,

@@ -194,9 +194,9 @@ class AlbumHandler:
             reply = "\n".join(lines)
             yield self.messaging.plain(event, reply)
 
-            # 下载封面并发送；-pic 不发送封面
+            # 下载封面并发送；-pic 或全局 send_cover=false 时不发送封面
             # 封面转成 PDF 后走文件通道，避免 QQ 官方对图片/JPEG 做图像审核
-            if '-pic' not in options:
+            if self.settings.send_cover and '-pic' not in options:
                 cover_path = self.settings.data_dir / f"cover_{album_id}.jpg"
                 cover_pdf = self.settings.data_dir / f"cover_{album_id}.pdf"
                 try:
