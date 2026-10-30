@@ -2,14 +2,9 @@
 
 import asyncio
 
-import jmcomic
 from astrbot.api import logger
-from jmcomic.jm_exception import (
-    DownloadCancelledException,
-    PartialDownloadFailedException,
-    RequestRetryAllFailException,
-)
 
+from ..core import jmcompat
 from ..core.downloader import ProgressDownloader
 
 
@@ -68,15 +63,22 @@ class DownloadService:
 
         attempts = self._retry_attempts()
         for attempt in range(1, attempts + 1):
+            jm = jmcompat.module()
+            if jm is None:
+                raise RuntimeError("未找到可用的 jmcomic，请检查插件依赖")
+            partial_exc = jmcompat.exceptions(
+                "PartialDownloadFailedException", "RequestRetryAllFailException"
+            )
+            cancelled_exc = jmcompat.exceptions("DownloadCancelledException")
             ProgressDownloader._progress.pop(str(album_id), None)
             # 2.7.9+ 的协作式取消：只 cancel asyncio 任务无法中断
             # to_thread 里的同步下载，必须同时置位 DownloadControl。
-            control = jmcomic.DownloadControl()
+            control = jm.DownloadControl()
             task = asyncio.create_task(
-                jmcomic.download_album_async(
+                jm.download_album_async(
                     album_id,
-                    self.settings.option,
-                    downloader=ProgressDownloader,
+                    self.client.current_option(),
+                    downloader=ProgressDownloader.current_impl(),
                     control=control,
                 )
             )
@@ -93,11 +95,11 @@ class DownloadService:
                 except BaseException:
                     pass
                 raise
-            except DownloadCancelledException:
+            except cancelled_exc:
                 # 库侧检测到 control 已取消，转成标准取消信号，
                 # 交给 handlers/download.py 统一回复「已停止」。
                 raise asyncio.CancelledError() from None
-            except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
+            except partial_exc as e:
                 folder = self.cache.find_album_dir(album_id)
                 if attempt < attempts:
                     yield self.messaging.plain(event,
@@ -182,19 +184,26 @@ class DownloadService:
         attempts = self._retry_attempts()
         result = None
         for attempt in range(1, attempts + 1):
-            control = jmcomic.DownloadControl()
+            jm = jmcompat.module()
+            if jm is None:
+                raise RuntimeError("未找到可用的 jmcomic，请检查插件依赖")
+            partial_exc = jmcompat.exceptions(
+                "PartialDownloadFailedException", "RequestRetryAllFailException"
+            )
+            cancelled_exc = jmcompat.exceptions("DownloadCancelledException")
+            control = jm.DownloadControl()
             try:
-                result = await jmcomic.download_photo_async(
-                    photo.photo_id, self.settings.option, control=control
+                result = await jm.download_photo_async(
+                    photo.photo_id, self.client.current_option(), control=control
                 )
                 break
             except asyncio.CancelledError:
                 # 单章下载直接 await，取消时同样要通知库侧停止线程内下载
                 control.cancel("用户执行 /jmstop")
                 raise
-            except DownloadCancelledException:
+            except cancelled_exc:
                 raise asyncio.CancelledError() from None
-            except (PartialDownloadFailedException, RequestRetryAllFailException) as e:
+            except partial_exc as e:
                 folder = self.cache.chapter_dir(photo, album_dir)
                 if attempt < attempts:
                     logger.warning(

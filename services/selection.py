@@ -3,8 +3,7 @@
 import asyncio
 import re
 
-from jmcomic.jm_exception import MissingAlbumPhotoException
-
+from ..core import jmcompat
 from ..core.models import PageUnit
 from ..core.parsing import extract_id, format_index_ranges
 from .catalog import get_album_detail_compat
@@ -82,6 +81,7 @@ class SelectionService:
             else:
                 # 先按章节探测：章节所属漫画ID与输入不同，说明输入是章节。
                 # 首章ID可能与漫画ID相同，这种情况仍按漫画处理。
+                missing_exc = jmcompat.exceptions("MissingAlbumPhotoException")
                 try:
                     photo_probe = await asyncio.to_thread(client.get_photo_detail, target_id)
                     parent_id = str(getattr(photo_probe, "album_id", ""))
@@ -90,7 +90,7 @@ class SelectionService:
                     else:
                         album_probe = await asyncio.to_thread(get_album_detail_compat, client, target_id)
                         kind = "album"
-                except MissingAlbumPhotoException:
+                except missing_exc:
                     album_probe = await asyncio.to_thread(get_album_detail_compat, client, target_id)
                     kind = "album"
             self.state.id_type_cache[cache_key] = kind

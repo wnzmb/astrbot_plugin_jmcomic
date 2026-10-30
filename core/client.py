@@ -4,17 +4,8 @@ import threading
 import time
 
 from astrbot.api import logger
-from jmcomic.jm_exception import (
-    MissingAlbumPhotoException,
-    RequestRetryAllFailException,
-    PartialDownloadFailedException,
-)
 
-# DownloadCancelledException 在 jmcomic 2.7.6+ 才有，低版本兼容处理
-try:
-    from jmcomic.jm_exception import DownloadCancelledException
-except ImportError:
-    DownloadCancelledException = None
+from . import jmcompat
 
 
 class JmClientManager:
@@ -40,9 +31,30 @@ class JmClientManager:
         ) * 60
         self._cached_client = None
         self._cached_at = 0.0
+        # 记录创建客户端时的 jmcomic 代际，用于识别 AstrBot 重载依赖
+        self._jm_generation = jmcompat.generation()
         # 订阅检查会通过 asyncio.to_thread(get_client) 在线程里登录，
         # 命令协程可能同时调用 get_client；用线程锁覆盖“检查缓存 + 登录”。
         self._client_lock = threading.RLock()
+
+    def _sync_generation(self):
+        """jmcomic 模块被重载后，重建 option 与客户端。
+
+        AstrBot 桌面版会把 jmcomic 从 sys.modules 弹出并从 data/site-packages
+        重新执行；旧客户端仍指向旧“代”的类，而库内部延迟导入会拿到新“代”，
+        导致 `不支持的类型: JmAlbumDetail` 这类跨代错误（BUG-027）。
+        """
+        generation = jmcompat.generation()
+        if generation == self._jm_generation:
+            return
+        self._jm_generation = generation
+        self._cached_client = None
+        self._cached_at = 0.0
+        try:
+            self.settings.refresh_option()
+        except Exception as e:
+            logger.warning(f"jmcomic 重载后重建 option 失败，继续使用旧配置: {e}")
+        logger.info("检测到 jmcomic 模块被重载，已重建客户端")
 
     def _login(self, client):
         username = self.settings.username
@@ -67,6 +79,7 @@ class JmClientManager:
         """
         # 优先返回仍在有效期内的已登录客户端
         with self._client_lock:
+            self._sync_generation()
             if (
                 self._cached_client is not None
                 and time.monotonic() - self._cached_at < self.login_ttl_seconds
@@ -84,6 +97,12 @@ class JmClientManager:
             self._cached_client = None
             self._cached_at = 0.0
             return self.get_client()
+
+    def current_option(self):
+        """返回当前代 jmcomic 的 option；模块被重载后自动重建。"""
+        with self._client_lock:
+            self._sync_generation()
+            return self.settings.option
 
     @staticmethod
     def is_auth_error(error):
@@ -111,17 +130,17 @@ class JmClientManager:
 
     def handle_exception(self, e: Exception, action: str = "操作") -> str:
         """把 jmcomic 异常转换为用户友好的提示"""
-        if isinstance(e, MissingAlbumPhotoException):
+        if jmcompat.is_exception(e, "MissingAlbumPhotoException"):
             return "❌ 查无此本/话，请检查 ID 是否正确"
-        elif isinstance(e, RequestRetryAllFailException):
+        elif jmcompat.is_exception(e, "RequestRetryAllFailException"):
             return (
                 "❌ 网络请求全部失败，可尝试在插件配置中更换域名；"
                 "如已启用代理，请检查 proxy_url 是否可连通\n"
                 f"{e}"
             )
-        elif isinstance(e, PartialDownloadFailedException):
+        elif jmcompat.is_exception(e, "PartialDownloadFailedException"):
             return "⚠️ 部分图片下载失败，已下载图片会保留缓存，请稍后重试"
-        elif DownloadCancelledException is not None and isinstance(e, DownloadCancelledException):
+        elif jmcompat.is_exception(e, "DownloadCancelledException"):
             return "⏹️ 下载已取消"
         else:
             logger.error(f"{action}失败: {e}", exc_info=True)

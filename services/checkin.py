@@ -5,7 +5,8 @@ import re
 from datetime import datetime
 
 from astrbot.api import logger
-from jmcomic import JmCryptoTool, JmDailyCheckinResp
+
+from ..core import jmcompat
 
 
 class CheckinService:
@@ -23,6 +24,9 @@ class CheckinService:
         """
         if isinstance(data, dict):
             return data
+        crypto = jmcompat.attr("JmCryptoTool")
+        if crypto is None:
+            return {"msg": str(data)} if data else {}
         if isinstance(data, list):
             if not data:
                 return {}
@@ -33,7 +37,7 @@ class CheckinService:
                 candidates.extend(data)
             for candidate in candidates:
                 try:
-                    text = JmCryptoTool.decode_resp_data(candidate, ts)
+                    text = crypto.decode_resp_data(candidate, ts)
                     parsed = json.loads(text)
                 except Exception:
                     continue
@@ -48,7 +52,7 @@ class CheckinService:
             return {"msg": "；".join(messages), "status": "ok"}
         if isinstance(data, str):
             try:
-                text = JmCryptoTool.decode_resp_data(data, ts)
+                text = crypto.decode_resp_data(data, ts)
             except Exception:
                 return {"msg": data}
             try:
@@ -83,6 +87,11 @@ class CheckinService:
         返回 JmDailyCheckinResp：code=0 成功，code=1 今日已签。
         其它失败直接抛异常，由上层转成用户提示。
         """
+        checkin_resp = jmcompat.attr("JmDailyCheckinResp")
+        if checkin_resp is None:
+            # 当前代 jmcomic 未提供签到响应类时，退回库自身实现
+            return client.daily_checkin()
+
         # HTML 客户端没有 req_api/API_DAILY_CHK，直接复用库实现
         if not hasattr(client, "API_DAILY_CHK") or not hasattr(client, "req_api"):
             return client.daily_checkin()
@@ -119,20 +128,20 @@ class CheckinService:
         success_keywords = ("Jcoin", "EXP", "成功", "签到成功", "簽到成功")
 
         if any(keyword in msg for keyword in already_keywords):
-            code = JmDailyCheckinResp.CODE_ALREADY_CHECKED_IN
+            code = checkin_resp.CODE_ALREADY_CHECKED_IN
         elif (
             any(keyword in msg for keyword in success_keywords)
             or status == "ok"
             or (isinstance(payload.get("data"), list) and bool(payload.get("data")))
         ):
-            code = JmDailyCheckinResp.CODE_SUCCESS
+            code = checkin_resp.CODE_SUCCESS
         elif self._is_empty_checkin_result(payload):
-            code = JmDailyCheckinResp.CODE_ALREADY_CHECKED_IN
+            code = checkin_resp.CODE_ALREADY_CHECKED_IN
             msg = msg or "服务端未返回签到结果，今日可能已签到"
         else:
             raise RuntimeError(f"签到失败：{msg or payload}")
 
-        return JmDailyCheckinResp(resp.resp, code, msg, parsed)
+        return checkin_resp(resp.resp, code, msg, parsed)
 
     # ========== 签到信息解析 ==========
     @staticmethod

@@ -1,5 +1,18 @@
 # 更新日志
 
+## v0.7.12 - 2026-10-30
+
+### 🐛 修复
+- 修复 BUG-027：升级 jmcomic 2.7.10 后 `/jmv`、`/jmlist`、`/jmc`、`/jm` 等全部报 `不支持的类型: JmAlbumDetail`。根因是 AstrBot 桌面版加载插件依赖时会重新执行 `data/site-packages/jmcomic`，使同一进程存在两代 jmcomic，插件持有的旧代 client 与库内部延迟导入解析到的新代类 `issubclass` 判假
+- 新增 `core/jmcompat.py` 运行时兼容层：`module()` / `generation()` / `attr()` / `exceptions()` / `is_exception()` 一律在调用时取当前代 jmcomic 模块与类
+- `JmClientManager` 检测到 `jmcomic` 模块换代后自动重建 option 与客户端；新增 `current_option()` 供下载链路取当前代配置
+- `ProgressDownloader` 改为按代生成 `JmAsyncDownloader` 子类（`current_impl()`），避免下载器基类跨代
+- `services/download.py`、`services/selection.py`、`services/checkin.py`、`handlers/system.py`、`core/config.py` 全部改为调用时取当前代模块/类，异常判定不再跨代漏判
+
+### 🧪 测试
+- 新增 `tests/test_jmcompat.py`（6 项）：换代检测、当前代属性读取、异常类元组、跨代 `is_exception` 行为
+- 新增 `tests/test_client_generation.py`（4 项）：换代前不重建、换代后重建一次、跨代异常识别；全量 50 项通过
+
 ## v0.7.11 - 2026-10-30
 
 ### 🐛 修复

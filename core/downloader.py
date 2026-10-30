@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from jmcomic.jm_async_downloader import JmAsyncDownloader
+from . import jmcompat
 
 
 # 库内置 advanced_retry 的请求级域名轮询配置：
@@ -14,15 +14,8 @@ ADVANCED_RETRY_CONFIG = {
 }
 
 
-class ProgressDownloader(JmAsyncDownloader):
-    """带进度跟踪的下载器，进度存在类变量中按 album_id 隔离
-    适配 jmcomic 2.7.9+ 的异步下载器架构（async 上下文管理器 + 异步钩子）
-    """
-
-    # key: album_id, value: 进度状态
-    _progress = {}
-    # key: album_id, value: 本次下载实际写入的漫画根目录（不依赖 dir_rule 命名）
-    _album_dirs = {}
+class _ProgressHooks:
+    """下载器钩子实现，由 ProgressDownloader.current_impl() 混入当前代基类。"""
 
     @staticmethod
     def _album_page_count(album):
@@ -98,3 +91,39 @@ class ProgressDownloader(JmAsyncDownloader):
             state['finished'] = True
             if state['total'] > 0:
                 state['done'] = state['total']
+
+
+class ProgressDownloader:
+    """进度存储 + 当前代下载器类工厂。
+
+    AstrBot 重载 jmcomic 后，旧的 ``JmAsyncDownloader`` 子类与新基类不属于
+    同一“代”，传给 ``download_album_async`` 会触发跨代类不匹配（BUG-027）。
+    因此按代缓存子类，调用方用 ``current_impl()`` 取实际下载器类。
+    """
+
+    # key: album_id, value: 进度状态
+    _progress = {}
+    # key: album_id, value: 本次下载实际写入的漫画根目录（不依赖 dir_rule 命名）
+    _album_dirs = {}
+
+    _impl = None
+    _impl_generation = None
+
+    @classmethod
+    def current_impl(cls):
+        """返回继承当前代 JmAsyncDownloader 的下载器类。"""
+        generation = jmcompat.generation()
+        if cls._impl is None or cls._impl_generation != generation:
+            base = jmcompat.attr(
+                "JmAsyncDownloader", module_name="jmcomic.jm_async_downloader"
+            )
+            if not isinstance(base, type):
+                raise RuntimeError("未找到 jmcomic 异步下载器，请检查 jmcomic 安装")
+            cls._impl = type("JmProgressDownloader", (_ProgressHooks, base), {})
+            cls._impl_generation = generation
+        return cls._impl
+
+    # 兼容直接调用 ProgressDownloader._album_page_count(album)
+    @classmethod
+    def _album_page_count(cls, album):
+        return _ProgressHooks._album_page_count(album)

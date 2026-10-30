@@ -6,11 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import jmcomic
 import yaml
 from astrbot.api import logger
-from jmcomic import JmModuleConfig
 
+from . import jmcompat
 from .downloader import ADVANCED_RETRY_CONFIG
 
 
@@ -64,13 +63,20 @@ def _build_option(
     download_base_dir: Path,
 ):
     """按配置动态生成 jmcomic option。"""
+    # 每次构建都取当前代 jmcomic，AstrBot 重载依赖后不会用到旧模块对象。
+    jm = jmcompat.module()
+    if jm is None or not hasattr(jm, "create_option_by_str"):
+        raise RuntimeError("未找到可用的 jmcomic，请检查插件依赖是否安装")
+    module_config = jmcompat.attr("JmModuleConfig")
+    api_domain_list = getattr(module_config, "DOMAIN_API_LIST", []) or []
+
     # 根据用户配置选择客户端类型：
     #   api  = API客户端（移动端接口），功能全：收藏添加、评论翻页、签到、用户信息，不支持分类筛选
     #   html = HTML客户端（网页端接口），支持分类筛选，但收藏添加报错、评论不翻页、总数解析不出
     if client_type == "api":
         # 用户自定义域名优先，随后追加 jmcomic 内置的 API 域名作为兜底
         api_domains = list(custom_domains)
-        for d in JmModuleConfig.DOMAIN_API_LIST:
+        for d in api_domain_list:
             if d not in api_domains:
                 api_domains.append(d)
         domain_conf = {"api": api_domains}
@@ -139,7 +145,7 @@ def _build_option(
 
     # 转成 yml 字符串加载
     option_str = yaml.dump(option_dict, allow_unicode=True)
-    option = jmcomic.create_option_by_str(option_str)
+    option = jm.create_option_by_str(option_str)
     option.dir_rule.base_dir = str(download_base_dir)
     return option
 
@@ -358,6 +364,27 @@ class PluginSettings:
             custom_sensitive_map=_parse_sensitive_map(config.get("custom_sensitive", "")),
             option=option,
         )
+
+    def refresh_option(self):
+        """用当前代 jmcomic 重建 option。
+
+        AstrBot 桌面版重载插件依赖后，旧的 option 绑定的是旧“代”的
+        jmcomic 类，继续使用会出现跨代类不匹配（BUG-027），因此需要重建。
+        """
+        self.option = _build_option(
+            client_type=self.client_type,
+            custom_domains=self.custom_domains,
+            username=self.username,
+            password=self.password,
+            photo_threads=self.photo_threads,
+            image_threads=self.image_threads,
+            use_proxy=self.use_proxy,
+            proxy_url=self.proxy_url,
+            request_timeout=self.request_timeout,
+            client_retry_times=self.client_retry_times,
+            download_base_dir=self.download_base_dir,
+        )
+        return self.option
 
     def prepare_directories(self) -> None:
         """创建数据目录、清理过期缓存、初始化状态文件。"""

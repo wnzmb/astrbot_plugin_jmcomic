@@ -4,8 +4,9 @@ import asyncio
 import re
 import time
 
-from jmcomic import JmModuleConfig
 from astrbot.api.event import AstrMessageEvent
+
+from ..core import jmcompat
 
 
 class SystemHandler:
@@ -33,19 +34,20 @@ class SystemHandler:
             raw = list(self.settings.custom_domains)
         else:
             try:
-                client = self.settings.option.new_jm_client()
+                client = self.client.current_option().new_jm_client()
                 raw = list(client.get_domain_list())
             except Exception:
                 raw = []
             if not raw:
+                module_config = jmcompat.attr("JmModuleConfig")
                 if self.settings.client_type == "api":
                     raw = list(
-                        JmModuleConfig.DOMAIN_API_UPDATED_LIST
-                        or JmModuleConfig.DOMAIN_API_LIST
+                        module_config.DOMAIN_API_UPDATED_LIST
+                        or module_config.DOMAIN_API_LIST
                         or []
                     )
                 else:
-                    fallback = JmModuleConfig.DOMAIN_HTML_LIST or JmModuleConfig.DOMAIN_HTML
+                    fallback = module_config.DOMAIN_HTML_LIST or module_config.DOMAIN_HTML
                     raw = list(fallback) if not isinstance(fallback, str) else [fallback]
         domains = []
         for item in raw:
@@ -160,6 +162,7 @@ class SystemHandler:
 
             api_domains = []
             html_domains = []
+            module_config = jmcompat.attr("JmModuleConfig")
 
             # 当前客户端已知域名
             try:
@@ -174,19 +177,19 @@ class SystemHandler:
             # API 域名：优先使用库自动更新后的列表
             if not api_domains:
                 api_domains = list(
-                    JmModuleConfig.DOMAIN_API_UPDATED_LIST
-                    or JmModuleConfig.DOMAIN_API_LIST
+                    module_config.DOMAIN_API_UPDATED_LIST
+                    or module_config.DOMAIN_API_LIST
                     or []
                 )
 
             # HTML 域名：通过 jmcomic 发布页获取，失败则回退到库缓存
             if not html_domains:
                 try:
-                    html_domains = list(await asyncio.to_thread(JmModuleConfig.get_html_domain_all))
+                    html_domains = list(await asyncio.to_thread(module_config.get_html_domain_all))
                 except Exception:
                     html_domains = []
                 if not html_domains:
-                    fallback = JmModuleConfig.DOMAIN_HTML_LIST or JmModuleConfig.DOMAIN_HTML
+                    fallback = module_config.DOMAIN_HTML_LIST or module_config.DOMAIN_HTML
                     if isinstance(fallback, str):
                         html_domains = [fallback]
                     elif fallback:
