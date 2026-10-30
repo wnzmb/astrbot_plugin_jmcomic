@@ -10,7 +10,7 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.12-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.13-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -77,7 +77,7 @@
 - **img2pdf >= 0.5.1 / reportlab >= 4.0.0**（PDF 合成优先 img2pdf，失败时 reportlab 逐页写入，最后回退 Pillow；用于降低大文件内存占用）
 - **PySocks >= 1.7.1**（SOCKS5 代理；不配置代理时不影响普通下载）
 - **pypinyin / zhconv / Pillow / PyYAML**（敏感词转拼音、简繁转换、PDF 回退与配置读取，随 `requirements.txt` 安装）
-- 版本能力说明：评论翻页需 2.7.3+，下载耗时统计需 2.7.4+，删除收藏需 2.7.6+，每日签到需 2.7.7+
+- 版本能力说明：评论翻页需 2.7.3+，删除收藏需 2.7.6+，每日签到需 2.7.7+
 - 如版本过低，在 AstrBot 后端 Python 环境执行：`pip install -U -r requirements.txt`
 
 ### 客户端类型说明

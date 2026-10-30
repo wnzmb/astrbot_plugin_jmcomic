@@ -330,7 +330,7 @@ class DownloadRunner:
                     folder = self.cache.chapter_dir(unit.photo, album_dir)
                     if folder is None:
                         try:
-                            folder, _ = await self.download.ensure_photo_downloaded(unit.photo, album_dir)
+                            folder = await self.download.ensure_photo_downloaded(unit.photo, album_dir)
                         except Exception as e:
                             logger.warning(f"第{unit.index}话补下载失败: {e}")
                             folder = None

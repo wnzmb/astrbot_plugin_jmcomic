@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from astrbot.api import logger
 
 from . import jmcompat
@@ -62,10 +61,16 @@ def _build_option(
     client_retry_times: int,
     download_base_dir: Path,
 ):
-    """按配置动态生成 jmcomic option。"""
+    """按配置动态生成 jmcomic option。
+
+    只写需要覆盖的字段：``JmOption.construct()`` 默认 ``cover_default=True``，
+    会用 ``merge_default_dict`` 与上游默认配置做深度合并，因此没写的键
+    （``client.async_impl``、``client.postman.type``、``plugins.valid`` 等）
+    自动继承当前 jmcomic 版本的默认值。升级 jmcomic 时不必同步这些默认值。
+    """
     # 每次构建都取当前代 jmcomic，AstrBot 重载依赖后不会用到旧模块对象。
     jm = jmcompat.module()
-    if jm is None or not hasattr(jm, "create_option_by_str"):
+    if jm is None or not hasattr(jm, "JmOption"):
         raise RuntimeError("未找到可用的 jmcomic，请检查插件依赖是否安装")
     module_config = jmcompat.attr("JmModuleConfig")
     api_domain_list = getattr(module_config, "DOMAIN_API_LIST", []) or []
@@ -88,39 +93,41 @@ def _build_option(
     proxy_map = {"http": proxy_url, "https": proxy_url} if use_proxy else {}
 
     option_dict = {
+        # 上游默认 True，插件必须显式关闭，避免 jmcomic 往控制台打日志
         "log": False,
+        "dir_rule": {
+            # 目录保留 ID + 网站话数，标题写入 metadata.json，避免长标题
+            # 触发 Windows MAX_PATH；结构：JM{漫画id}/P{章节id}_第N话/图片
+            "rule": "Bd/JM{Aid}/P{Pid}_第{Palbum_index}话",
+            "base_dir": str(download_base_dir),
+            "normalize_zh": "zh-cn",
+        },
+        "download": {
+            # 只覆盖用户可配的线程数与输出后缀；cache / image.decode 交给上游默认
+            "threading": {
+                "image": image_threads,
+                "photo": photo_threads,
+            },
+            "image": {
+                "suffix": ".jpg",
+            },
+        },
         "client": {
             "impl": client_type,
             "retry_times": client_retry_times,
+            # 上游默认关闭客户端缓存，插件需要搜索/详情的磁盘缓存
             "cache": True,
             "domain": domain_conf,
             "postman": {
                 "meta_data": {
                     "proxies": proxy_map,
-                    "timeout": request_timeout
+                    "timeout": request_timeout,
                 }
-            }
-        },
-        "download": {
-            "cache": True,
-            "image": {
-                "decode": True,
-                "suffix": ".jpg"
             },
-            "threading": {
-                "image": image_threads,
-                "photo": photo_threads
-            }
-        },
-        "dir_rule": {
-            # 目录保留 ID + 网站话数，标题写入 metadata.json，避免长标题
-            # 触发 Windows MAX_PATH；结构：JM{漫画id}/P{章节id}_第N话/图片
-            "rule": "Bd/JM{Aid}/P{Pid}_第{Palbum_index}话",
-            "normalize_zh": "zh-cn"
         },
         "plugins": {
-            "after_init": []
-        }
+            "after_init": [],
+        },
     }
 
     # 请求级域名轮询放在登录之前，确保登录与后续 client 都应用该策略。
@@ -143,10 +150,9 @@ def _build_option(
             }
         })
 
-    # 转成 yml 字符串加载
-    option_str = yaml.dump(option_dict, allow_unicode=True)
-    option = jm.create_option_by_str(option_str)
-    option.dir_rule.base_dir = str(download_base_dir)
+    # 直接构造：construct 内部会与上游默认配置深度合并，
+    # 省掉 yaml.dump → create_option_by_str 的序列化往返。
+    option = jm.JmOption.construct(option_dict)
     return option
 
 

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from astrbot.api import logger
+
 from . import jmcompat
 
 
@@ -16,6 +18,22 @@ ADVANCED_RETRY_CONFIG = {
 
 class _ProgressHooks:
     """下载器钩子实现，由 ProgressDownloader.current_impl() 混入当前代基类。"""
+
+    async def _super_hook(self, name, *args):
+        """调用上游同名钩子。
+
+        上游改钩子名或签名时只记警告并跳过，让下载继续，避免「进度功能
+        失效」升级成「整本下载失败」。
+        """
+        hook = getattr(super(), name, None)
+        if hook is None:
+            logger.warning(f"jmcomic 缺少下载钩子 {name}，进度统计可能不准")
+            return None
+        try:
+            return await hook(*args)
+        except TypeError as exc:
+            logger.warning(f"jmcomic 钩子 {name} 签名已变化，已跳过: {exc}")
+            return None
 
     @staticmethod
     def _album_page_count(album):
@@ -32,7 +50,7 @@ class _ProgressHooks:
         return max(0, total)
 
     async def before_album(self, album):
-        await super().before_album(album)
+        await self._super_hook("before_album", album)
         try:
             photo_total = len(album)
         except Exception:
@@ -48,7 +66,7 @@ class _ProgressHooks:
         }
 
     async def before_photo(self, photo):
-        await super().before_photo(photo)
+        await self._super_hook("before_photo", photo)
         try:
             state = ProgressDownloader._progress.get(str(photo.album_id))
             if state is None:
@@ -66,7 +84,7 @@ class _ProgressHooks:
             pass
 
     async def after_image(self, image, img_save_path):
-        await super().after_image(image, img_save_path)
+        await self._super_hook("after_image", image, img_save_path)
         try:
             album_id = str(image.from_photo.album_id)
             state = ProgressDownloader._progress.get(album_id)
@@ -84,7 +102,7 @@ class _ProgressHooks:
             pass
 
     async def after_album(self, album):
-        await super().after_album(album)
+        await self._super_hook("after_album", album)
         aid = str(album.album_id)
         state = ProgressDownloader._progress.get(aid)
         if state is not None:

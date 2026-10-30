@@ -1,5 +1,24 @@
 # 更新日志
 
+## v0.7.13 - 2026-10-30
+
+### ✨ 新增
+- 新增 `tests/test_upstream_contract.py` 契约测试（13 项）：覆盖 `get_album_detail(allow_redirect=)`、`JmAlbumDetail.series_id/is_favorite/liked`、`DownloadControl`、`download_album_async(control=)`、`JmAsyncDownloader` 四个钩子、签到内部接口、`JmOption.construct()` 合并语义、`JmModuleConfig` 域名属性等。升级 jmcomic 时先跑它，能提前发现断点
+
+### 🔧 变更
+- `option` 构建改为「只覆盖必要字段」：依赖 `JmOption.construct()` 与上游默认配置深度合并，删掉照抄默认值的行与 `yaml.dump → create_option_by_str` 序列化往返，`dir_rule.base_dir` 直接写进配置
+- `/jmcheckin` 改为优先调用库 `daily_checkin()`，仅在库对空 `data` 解码失败时回退到兼容解析；上游修好后自动受益
+- 下载进度钩子加保护：上游钩子改名或改签名时只记警告并跳过，不再让整本下载失败
+- 移除未使用的耗时字段：`holder["duration"]`、`ensure_photo_downloaded` 的耗时返回值、`DownloadResult.duration` 读取全部删除；README 同步删除「下载耗时统计」说明
+
+### 📝 文档
+- `docs/上游能力与插件选型.md` 新增「十一、上游耦合清单（升级必查）」，列出 7 处上游内部依赖、断点表现与升级操作顺序
+- `docs/功能对比与上游能力评估.md` 升级清单加入契约测试步骤
+- `docs/测试流程.md` 新增 R18（签到库优先、option 等价、钩子降级）
+
+### 🧪 测试
+- 新增契约测试 13 项、签到「库优先 + 兜底 + 登录错误不回退」3 项；全量 65 项通过，`ruff check .` 通过
+
 ## v0.7.12 - 2026-10-30
 
 ### 🐛 修复

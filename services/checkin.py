@@ -81,8 +81,35 @@ class CheckinService:
             return True
         return isinstance(data, (str, list, tuple, dict)) and len(data) == 0
 
+    @staticmethod
+    def _supports_compat(client):
+        """API 客户端才具备直连 /daily_chk 的能力。"""
+        return hasattr(client, "API_DAILY_CHK") and hasattr(client, "req_api")
+
+    @staticmethod
+    def _is_login_error(exc):
+        text = str(exc)
+        return "user_id" in text or "登录" in text
+
     def daily_checkin(self, client, daily_id=None):
-        """执行签到，兼容 list 响应与空 data 响应。
+        """执行签到：优先用库实现，失败时回退到兼容解析。
+
+        2.7.10 已把判重关键字提成类字段，但空 data（``{"code":200,"data":[]}``）
+        仍会在解码阶段失败。这里先走库实现，只有失败且不是登录问题才走兼容
+        路径；上游哪天修好空响应，插件会自动使用上游实现，不再依赖兼容代码。
+        """
+        if not self._supports_compat(client):
+            return client.daily_checkin(daily_id)
+        try:
+            return client.daily_checkin(daily_id)
+        except Exception as exc:
+            if self._is_login_error(exc):
+                raise
+            logger.warning(f"签到走库实现失败，改用兼容解析: {exc}")
+        return self._daily_checkin_compat(client, daily_id)
+
+    def _daily_checkin_compat(self, client, daily_id=None):
+        """兼容路径：直连 /daily_chk，处理 list / 空 data 响应。
 
         返回 JmDailyCheckinResp：code=0 成功，code=1 今日已签。
         其它失败直接抛异常，由上层转成用户提示。
@@ -90,11 +117,7 @@ class CheckinService:
         checkin_resp = jmcompat.attr("JmDailyCheckinResp")
         if checkin_resp is None:
             # 当前代 jmcomic 未提供签到响应类时，退回库自身实现
-            return client.daily_checkin()
-
-        # HTML 客户端没有 req_api/API_DAILY_CHK，直接复用库实现
-        if not hasattr(client, "API_DAILY_CHK") or not hasattr(client, "req_api"):
-            return client.daily_checkin()
+            return client.daily_checkin(daily_id)
 
         user_id = getattr(client, "_user_id", None)
         if not user_id:
