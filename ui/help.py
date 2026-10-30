@@ -27,7 +27,7 @@ def build_help_text(settings, quota):
     max_batch_hint = f"（每批最多 {max_batch} 个目标）" if max_batch > 0 else ""
 
     return (
-        "📖 漫画站插件 帮助 v0.7.9\n"
+        "📖 漫画站插件 帮助 v0.7.10\n"
         "━━━━━━━━━━━━━━━\n"
         "🔍 搜索：\n"
         "  /jms 关键词 [页码] [排序]   全站搜索\n"
@@ -99,7 +99,7 @@ def build_help_text(settings, quota):
         "📄 PDF：每 {pdf_page_limit} 页一册（整话优先，单话超限按页切分）\n"
         "🗜️ ZIP：最多 {zip_group_size} 话/册，{zip_page_text}\n"
         "⚙️ 当前客户端：{client_type}（插件配置可切换 api/html）\n"
-        "📦 需 jmcomic 2.7.9+（requirements 会自动安装/升级）\n"
+        "📦 需 jmcomic 2.7.10+（requirements 会自动安装/升级）\n"
         "⏳ 文件限额：每日{daily_limit_text}、每小时{hourly_limit_text}（0=不限）".format(
             max_batch_hint=max_batch_hint,
             confirm_timeout=settings.confirm_timeout,

@@ -17,7 +17,7 @@ class CheckinService:
     def _decode_checkin_data(data, ts):
         """解析 /daily_chk 的 data。
 
-        jmcomic 2.7.9 默认把 data 当 base64 字符串；实测首次签到成功时
+        jmcomic 默认把 data 当 base64 字符串；实测首次签到成功时
         服务端可能返回 list，导致 b64decode(list) 抛 TypeError。这里同时
         兼容字符串、list 和已经是 dict 的响应。
         """
@@ -58,8 +58,27 @@ class CheckinService:
             return parsed if isinstance(parsed, dict) else {"msg": text}
         return {}
 
+    @staticmethod
+    def _is_empty_checkin_result(payload):
+        """判断是否为“外层 code=200 但 data 为空”的签到响应。
+
+        实测重复签到或 daily_id 已失效时，服务端会返回
+        ``{"code": 200, "data": []}``：既没有 errorMsg，也没有加密数据。
+        这类响应不能当失败直接抛异常，交给上层按“今日已签到”处理。
+        """
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("errorMsg") or payload.get("error"):
+            return False
+        if payload.get("code") not in (200, "200"):
+            return False
+        data = payload.get("data")
+        if data is None:
+            return True
+        return isinstance(data, (str, list, tuple, dict)) and len(data) == 0
+
     def daily_checkin(self, client, daily_id=None):
-        """执行签到，兼容 jmcomic 2.7.9 的 list 响应。
+        """执行签到，兼容 list 响应与空 data 响应。
 
         返回 JmDailyCheckinResp：code=0 成功，code=1 今日已签。
         其它失败直接抛异常，由上层转成用户提示。
@@ -94,6 +113,9 @@ class CheckinService:
             "今天已經簽到過了", "今天已经签到过了", "已簽到", "已签到",
             "簽到過", "签到过", "已完成", "已打卡",
         )
+        # 2.7.10+ 把判重关键字提取为类字段，允许库侧扩展
+        extra_keywords = getattr(client, "DAILY_ALREADY_CHECKED_IN_KEYWORDS", ()) or ()
+        already_keywords = tuple(already_keywords) + tuple(extra_keywords)
         success_keywords = ("Jcoin", "EXP", "成功", "签到成功", "簽到成功")
 
         if any(keyword in msg for keyword in already_keywords):
@@ -104,6 +126,9 @@ class CheckinService:
             or (isinstance(payload.get("data"), list) and bool(payload.get("data")))
         ):
             code = JmDailyCheckinResp.CODE_SUCCESS
+        elif self._is_empty_checkin_result(payload):
+            code = JmDailyCheckinResp.CODE_ALREADY_CHECKED_IN
+            msg = msg or "服务端未返回签到结果，今日可能已签到"
         else:
             raise RuntimeError(f"签到失败：{msg or payload}")
 

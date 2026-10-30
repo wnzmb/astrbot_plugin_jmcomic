@@ -10,12 +10,12 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.9-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.10-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
-  <a href="https://github.com/hect0x7/JMComic-Crawler-Python"><img src="https://img.shields.io/badge/JMCOMIC-≥2.7.9-9C27B0?style=for-the-badge" alt="JMComic"></a>
-  <a href="https://github.com/wnzmb/astrbot_plugin_jmcomic"><img src="https://img.shields.io/badge/UPDATED-2026.10.23-2196F3?style=for-the-badge" alt="Updated"></a>
+  <a href="https://github.com/hect0x7/JMComic-Crawler-Python"><img src="https://img.shields.io/badge/JMCOMIC-≥2.7.10-9C27B0?style=for-the-badge" alt="JMComic"></a>
+  <a href="https://github.com/wnzmb/astrbot_plugin_jmcomic"><img src="https://img.shields.io/badge/UPDATED-2026.10.30-2196F3?style=for-the-badge" alt="Updated"></a>
 </div>
 
 一个为 [AstrBot](https://astrbot.app) 开发的 JM 漫画站 QQ 机器人插件，基于 [jmcomic](https://github.com/hect0x7/JMComic-Crawler-Python) 库开发，支持搜索、查详情、评论翻页、下载 PDF/ZIP、批量下载、按话选择、下载进度查询、列表/搜索/评论/历史翻页、请求级域名重试、HTTP/SOCKS5 代理、每日签到、收藏夹管理与 CSV 导出、订阅更新推送、群白名单、排行榜、随机抽漫、下载历史、敏感词自动转拼音、简繁自动转换、缓存元数据与标题打包等功能，所有参数均可在配置页自定义。
@@ -72,7 +72,7 @@
 
 ### 依赖要求
 
-- **jmcomic >= 2.7.9**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
+- **jmcomic >= 2.7.10**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
 - **img2pdf >= 0.5.1 / reportlab >= 4.0.0**（PDF 合成优先 img2pdf，失败时 reportlab 逐页写入，最后回退 Pillow；用于降低大文件内存占用）
 - **PySocks >= 1.7.1**（SOCKS5 代理；不配置代理时不影响普通下载）
 - **pypinyin / zhconv / Pillow / PyYAML**（敏感词转拼音、简繁转换、PDF 回退与配置读取，随 `requirements.txt` 安装）

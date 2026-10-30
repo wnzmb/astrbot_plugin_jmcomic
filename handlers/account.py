@@ -31,7 +31,7 @@ class AccountHandler:
             if not hasattr(client, 'get_daily') or not hasattr(client, 'daily_checkin'):
                 yield self.messaging.plain(event,
                     f"⚠️ 当前 jmcomic 版本（{jm_version}）不支持每日签到功能\n"
-                    f"需要 jmcomic >= 2.7.7（推荐升级到 2.7.9），请升级后重启 AstrBot：\n"
+                    f"需要 jmcomic >= 2.7.7（推荐升级到 2.7.10），请升级后重启 AstrBot：\n"
                     f"  D:\\Program Files\\AstrBot\\backend\\python\\python.exe -m pip install -U jmcomic"
                 )
                 return
@@ -48,37 +48,42 @@ class AccountHandler:
             info = self.checkin.parse_daily_info(daily)
             daily_id = self.checkin.daily_payload(daily).get("daily_id")
 
-            # 执行签到
-            yield self.messaging.plain(event, "✅ 正在签到...")
+            # 签到日历已经显示今天签过：不再请求签到接口，避免服务端返回空 data
+            already_signed = bool(info.get('today_signed'))
             signed_ok = False
-            try:
+            if already_signed:
+                result_msg = "📌 今日已签到\n签到日历显示今天已经完成打卡"
+                signed_ok = True
+            else:
+                yield self.messaging.plain(event, "✅ 正在签到...")
                 try:
-                    resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
-                except Exception as e:
-                    # 登录态刚好过期时刷新一次再签
-                    if not self.client.is_auth_error(e):
+                    try:
+                        resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
+                    except Exception as e:
+                        # 登录态刚好过期时刷新一次再签
+                        if not self.client.is_auth_error(e):
+                            raise
+                        client = self.client.refresh_client()
+                        resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
+                    if resp.code == 0:
+                        result_msg = f"🎉 签到成功！\n{resp.msg}"
+                        signed_ok = True
+                    elif resp.code == 1:
+                        result_msg = f"📌 今日已签到\n{resp.msg}"
+                        signed_ok = True
+                    else:
+                        result_msg = f"签到结果：{resp.msg}"
+                except Exception as checkin_err:
+                    # 兼容旧版 jmcomic 的“已签到”异常文案
+                    err_str = str(checkin_err)
+                    if any(kw in err_str for kw in ('已签', '签到过', '已经签', '今日已')):
+                        result_msg = f"📌 今日已签到\n{err_str.replace('签到失败：', '')}"
+                        signed_ok = True
+                    else:
                         raise
-                    client = self.client.refresh_client()
-                    resp = await asyncio.to_thread(self.checkin.daily_checkin, client, daily_id)
-                if resp.code == 0:
-                    result_msg = f"🎉 签到成功！\n{resp.msg}"
-                    signed_ok = True
-                elif resp.code == 1:
-                    result_msg = f"📌 今日已签到\n{resp.msg}"
-                    signed_ok = True
-                else:
-                    result_msg = f"签到结果：{resp.msg}"
-            except Exception as checkin_err:
-                # 兼容旧版 jmcomic 的“已签到”异常文案
-                err_str = str(checkin_err)
-                if any(kw in err_str for kw in ('已签', '签到过', '已经签', '今日已')):
-                    result_msg = f"📌 今日已签到\n{err_str.replace('签到失败：', '')}"
-                    signed_ok = True
-                else:
-                    raise
 
             # 签到后重新拉取状态：API 客户端的连续天数要从 record 日历反推
-            if signed_ok:
+            if signed_ok and not already_signed:
                 try:
                     daily_after = await asyncio.to_thread(client.get_daily)
                     final_info = self.checkin.parse_daily_info(daily_after, assume_today_signed=True)
