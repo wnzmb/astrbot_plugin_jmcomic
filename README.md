@@ -299,8 +299,9 @@
 ## 文档
 
 - [测试流程](docs/测试流程.md)
+- [功能对比与上游能力评估](docs/功能对比与上游能力评估.md)
 - [开发文档与修复日志](docs/开发文档与修复日志.md)
-- [重构计划](docs/REFACTOR_PLAN.md)
+- [jmcomic 上游 CHANGELOG 快照](docs/jmcomic-CHANGELOG.md)
 
 单元测试（使用标准库 `unittest`，不依赖 pytest）：
 
