@@ -1,0 +1,211 @@
+# Changelog
+
+本文件记录 jmcomic 的版本变化。2.7.0 之前的更新记录请见 GitHub Releases。
+
+条目分类参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
+版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [2.7.10] - 2026-10-22
+
+### Summary
+
+本次更新支持 API 客户端在 `get_album_detail` 传入章节 ID 时自动重定向至父本子，新增收藏状态不匹配时的自动回滚保护，提取每日签到判重关键字为可配置类字段并补齐简体文案，优化免分割图片下载判断，并同步禁漫 APP `2.1.12` 版本号与内置 API 域名。
+
+### Added
+
+- `JmAlbumDetail` 新增 `series_id` 字段；同步与异步 API 客户端的 `get_album_detail` 新增 `allow_redirect: bool = True` 参数，当传入多章本子的子章节 ID 时默认打印 `api.album_redirect` 提示日志并自动重定向获取所属父本子详情。
+- `JmUserClient` 与 `AsyncJmcomicClient` 新增 `DAILY_ALREADY_CHECKED_IN_KEYWORDS` 类字段，统一管理每日签到重复打卡匹配关键字，方便外部自定义扩展。
+- 同步与异步 API 客户端的 `toggle_favorite_album`、`add_favorite_album`、`delete_favorite_album` 新增 `rollback_when_mismatch: bool = True` 参数，在底层 Toggle 接口返回类型与预期不符时默认自动再次请求回滚服务端状态后再抛出异常。
+
+### Changed
+
+- 更新禁漫移动端版本号 `JmMagicConstants.APP_VERSION` 至 `2.1.12`，并同步更新内置 API 域名列表 `JmModuleConfig.DOMAIN_API_LIST`。
+- 优化 `JmOption.need_to_decode_image` 判断逻辑：当图片分割数计算结果为 `0`（无需拼接还原）时直接返回 `False`，避免无效解码开销。
+
+### Fixed
+
+- 修复移动端 `daily_checkin` 在服务端返回简体中文 `"今天已经签到过了"` 以及网页端返回 `{"error": "finished"}` 时未能识别为重复签到（`CODE_ALREADY_CHECKED_IN`）而误抛异常的问题。
+- 修复移动端对已收藏本子调用 `add_favorite_album`（或对未收藏本子调用 `delete_favorite_album`）时，底层 Toggle 接口直接翻转服务端收藏状态且未回滚的问题。
+
+## [2.7.9] - 2026-10-13
+
+### Summary
+
+本次更新支持基于 `DownloadControl` 的协作式取消下载与多层级共享 Runtime 调度，重构批量下载结果为保序检索集合，降低默认图片并发配置，并优化多任务进度界面。
+
+### Added
+
+- 新增 `JmTempRuntime`、`JmSyncRuntime` 与 `JmAsyncRuntime`；裸同步 Downloader 的局部调度使用临时单池 Runtime，顶层同步 API 或自定义同步调度可复用 `album/photo/image` 三层线程池，异步下载可复用 `decode` 线程池。
+- 新增 `DownloadControl` 和 `DownloadCancelledException`，支持通过任务上下文协作式取消同步与异步下载；`DownloadCancelledException` 支持通过 `completed_results` 与 `unfinished_ids` 读取批量取消时的已完成成果与未完成 ID。
+- `BatchResult` 重构为独立类，保持输入 FIFO 原序并支持车号检索与下标访问，不再继承 `set`。
+- `DownloadResult` 新增 `album` 和 `photo` 快捷实体访问属性。
+- 新增 `JTC` (Jm Task Context) 门面类，统一提供上下文、Runtime、Option 及取消控制器的快捷读取方法。
+- `jmcomic --dry-run` 使用随机模拟任务预览多任务进度和重试日志，不请求网络、不下载图片、不写日志文件，也不加载 `--option` 配置；不能与 `--no-progress` 同用。
+
+### Changed
+
+- 默认图片层下载并发配置 `download.threading.image` 从 30 调整为 20。
+- 下载调度统一使用标准库 Executor；顶层 API 和裸同步 Downloader 的临时调度显式关闭自己创建的 Runtime，`jm_task_context` 只传播字段；外部 Runtime 和 Executor 仍由调用方关闭。
+- 顶层下载会把 Runtime 和 Option 作为公开字段直接放入任务上下文；Runtime 不依赖 Context 或 Option，未配置的层级由实际调用点传入默认 worker 数。
+
+### Fixed
+
+- 同步和异步下载器共用一个动态进度界面与日志区，已结束任务保留到最后一个活动下载器退出，再统一关闭界面。
+- 界面启动或渲染失败时清理注册状态；界面退出失败时仍执行下载器资源释放，避免影响后续下载。
+
+
+## [2.7.8] - 2026-10-07
+
+### Summary
+
+本次更新修复禁漫 API 响应携带 UTF-8 BOM 导致 JSON 解析与校验失败的问题（#585），并兼容空下载场景下的 GitHub Actions 工作流。
+
+### Fixed
+
+- **API 响应 UTF-8 BOM 兼容与校验统一**：在 `JmcomicText.try_parse_json_object` 中增加对 UTF-8 BOM 字符（`\ufeff`）的过滤剥离，并在同步/异步客户端中统一使用该方法进行 API 响应合法性校验，彻底解决因 BOM 导致客户端误判为非 JSON 响应并反复重试耗尽的问题（[#585](https://github.com/hect0x7/JMComic-Crawler-Python/issues/585)）。
+- **下载 Actions 工作流空目录保护**：在 `download.yml` 与 `download_dispatch.yml` 中增加对 `$JM_DOWNLOAD_DIR` 是否存在及是否非空的判断；在无本子下载时跳过压缩和构件上传，避免目录不存在导致工作流异常中断。
+
+## [2.7.7] - 2026-09-12
+
+### Summary
+
+本次更新新增签到及打卡日历接口，为本子详情增加收藏与点赞状态，修复 HTML 登录结果校验。引入插件依赖声明、依赖策略，并完善收藏夹导出插件的失败重试与汇总提示，新增
+Calibre metadata 插件。
+
+### Added
+
+#### 每日签到
+
+| 功能                          | 说明                                                                                                                                                |
+|:------------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `get_daily` / `daily_checkin` | HTML/API 客户端支持获取每日签到信息与打卡日历、执行每日签到，未提供 `daily_id` 时自动获取。 |
+| `JmDailyCheckinResp`          | 双端统一返回标准打卡状态（`code=0` 签到成功，`code=1` 今日重复打卡，透传服务端 `msg`），其余失败直接抛异常。                                        |
+
+#### 实体字段
+
+| 字段                        | 说明                                                        |
+|:----------------------------|:------------------------------------------------------------|
+| `JmAlbumDetail.is_favorite` | `bool`，HTML 网页端与 API 移动端双端识别本子收藏状态。      |
+| `JmAlbumDetail.liked`       | `bool`，HTML 网页端与 API 移动端双端识别本子点赞/喜欢状态。 |
+
+#### 插件系统
+
+| 功能                         | 说明                                                                                                                                                                                                       |
+|:-----------------------------|:-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `plugin_dependencies` 声明   | 插件基类新增 `plugin_dependencies` 类属性声明运行时依赖，并提供 `required_dependencies_for(kwargs)` 钩子按配置动态扩展（如 `zip` 按加密方式追加 `pyzipper`/`py7zr`，`img2pdf` 启用加密时追加 `pikepdf`）。 |
+| `dependencies_strategy` 配置 | 新增 `plugins.dependencies_strategy`，支持三种策略：`failed-fast`（默认，缺失即报错并给出安装指引）、`auto-install`（自动 pip 安装）、`ignore-only-log`（仅警告不阻断）。                                  |
+| `[plugins]` extras           | `pyproject.toml` 新增 extras，`pip install jmcomic[plugins]` 一次性安装全部插件可选依赖（`img2pdf`、`pikepdf`、`psutil`、`py7zr`、`pyzipper`、`rich`、`browser_cookie3`）。                                |
+| 已有插件依赖补齐             | 为 `usage_log`、`download_progress`、`auto_set_browser_cookies` 等已有插件补齐 `plugin_dependencies` 声明。                                                                                                |
+| `calibre_metadata` 插件      | 在 `after_album` 阶段生成 Calibre 可识别的 `metadata.opf`，支持 `include_cover` 下载封面、`fields` 自定义元数据；OPF 生成由 `jmcomic-calibre` 提供。impl by [@yifenliwu](https://github.com/yifenliwu)。   |
+
+### Changed
+
+| 变更点                                           | 说明                                                                                                                       |
+|:-------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------|
+| `zip` 插件 `encrypt` 校验                        | 新增参数类型校验，非法标量（如 `encrypt: enabled`）在初始化阶段即拦截并给出清晰报错，不再等到运行时抛出 `AttributeError`。 |
+| HTML 登录接口返回值更新                          | `POST /login` 密码错误时 HTTP 200 误判为成功，增加 `status == 1` 严格校验并提取错误信息。                                  |
+| API `page_count` / `pub_date` 字段适配最新返回值 | `page_count` 正确映射为全本总图片数（`total_photos`），`pub_date` 格式化为发布日期。                                       |
+| `PhotoConcurrentFetcherProxy` 代理委托           | 补齐 `__getattr__` 委托，修复底层客户端方法丢失的问题。                                                                    |
+
+## [2.7.6] - 2026-09-09
+
+### Summary
+
+本次更新支持 API 与 HTML 客户端的添加与取消收藏功能，新增收藏夹列表专用排序常量，并同步禁漫 APP 2.1.6 移动端版本号。
+
+### Added
+- 新增 `delete_favorite_album` 接口，支持 HTML 网页端、API 移动端及异步客户端取消漫画收藏。
+- 新增收藏夹专用排序常量 `JmMagicConstants.ORDER_FF_FAVORITE_TIME`（按收藏时间排序）与 `JmMagicConstants.ORDER_FF_UPDATE_TIME`（按更新时间排序），并作为收藏夹接口默认参数。
+- API 客户端内部新增 `toggle_favorite_album` 复用方法，并在 `add_favorite_album` 与 `delete_favorite_album` 中增加操作类型强校验，防止底层 Toggle 接口误操作。
+
+### Changed
+- 更新禁漫移动端版本号至 `2.1.6`。
+
+## [2.7.5] - 2026-08-25
+
+### Summary
+
+本次更新修复网页端收藏夹总数误解析，并同步禁漫 APP 2.1.2 的移动端版本号。
+
+### Fixed
+- 修复收藏夹页面改版后，总数正则优先命中 CSS 尺寸、导致 `JmHtmlClient.favorite_folder().total` 错误返回 `50` 的问题。
+
+### Changed
+- 更新禁漫移动端版本号至 `2.1.2`。
+- `RequestRetryAllFailException` 现在会保留并输出各域名、各次重试的原始异常，便于定位真实失败原因。
+
+## [2.7.4] - 2026-08-09
+
+### Summary
+
+本次更新让同步和异步下载进度更直观、下载结果更易处理，还可以分页浏览全站评论并直接获取当前页码。
+
+### Added
+- 新增 `download_progress` 插件：`jmcomic` 命令安装 `rich` 后默认启用，可通过 `--no-progress` 关闭自动启用；同步和异步下载在交互终端中默认展示最近 6 条日志，并在下方显示彩色的本子、章节两级进度；支持通过 `log_file` 和 `terminal_log_lines` 自定义日志文件与终端日志行数；IDE 运行面板等不支持动态界面的环境只在结束后输出汇总；完整日志写入文件且不再重复输出 `INFO` 字段。
+
+![download_progress 插件效果](https://raw.githubusercontent.com/hect0x7/JMComic-Crawler-Python/v2.7.4/assets/docs/sources/images/download_progress_terminal.png)
+
+- 新增下载清单 `DownloadManifest`，聚合一次顶层下载产生的图片路径和导出文件。
+- `DownloadResult` 新增 `manifest` 和 `duration` 属性，同时保持原有二元组解包兼容性。
+- 新增获取全站评论分页及生成器 API，支持 HTML、API 和异步 API 客户端。
+- 搜索、分类、收藏夹和评论分页结果新增 `page_number` 字段，可直接获取当前页码。
+- GitHub Actions 下载支持压缩图片，减少最终压缩包体积。
+
+### Changed
+- `JmDownloader.use()` 和 `JmAsyncDownloader.use()` 现在会记录替换前后的 Downloader class，异步下载 API 也会使用已替换的默认异步 Downloader。
+- 同步与异步下载流程统一记录成功下载及缓存命中的图片，并使用图片插件处理后的最终保存路径。
+- `result.duration` 记录从调用下载 API 到返回所用的总时间；本子、章节和图片实体分别记录各自的下载耗时。
+- Feature 根据当前 `TaskContext` 判断顶层下载类型，不再需要额外传入 `feature_from`。
+- ZIP、PDF 和长图插件产物按文件后缀登记到下载清单。
+- 详情缓存返回独立干净副本，避免下载路径、耗时等状态污染后续缓存结果。
+- `JmAlbumComment` 新增可读的字符串输出，支持直接打印评论。
+- 完善 HTML 评论解析，补齐全站评论中的本子 ID 和用户 ID。
+- 全站评论生成器分别使用 API 总页数和 HTML 重复页判断结束，避免两类响应混用同一停止条件。
+- 使用 `--no-progress` 但 Option 已配置 `download_progress` 时，在固定启动面板中显示冲突提醒。
+- GitHub Release 改为从对应版本的 `CHANGELOG.md` 生成发布说明，并支持手动触发发布流程。
+- 重写下载返回值与异步下载文档，统一使用同时兼容 GitHub 和 MkDocs 的提示及折叠语法。
+- 综合插件示例并入插件教程，移除使用价值较低的“模块自定义”教程，并将日志接管方式迁移到日志教程。
+
+### Removed
+- 按照弃用计划移除 `jmcomic.cl` 兼容模块，请使用 `jmcomic.cli`。
+
+## [2.7.3] - 2026-08-03
+
+### Added
+- 新增获取本子评论的 API。
+- 新增任务上下文，可按任务维度标记、传播和收集日志。
+
+### Changed
+- 精简下载 API 参数。
+- 兼容 `jm-view-server` 项目改名。
+- 完善任务日志及下载 API 使用文档。
+
+## [2.7.2] - 2026-07-16
+
+### Added
+- 异步 API 新增 `categories_filter_gen`。
+
+### Changed
+- 更新 JM 内置域名。
+- 完善异步 API、测试和异步使用文档。
+
+### Removed
+- 移除已经失效的 GitHub 域名抓取实现。
+
+## [2.7.1] - 2026-07-04
+
+### Changed
+- 优化异步请求的重试配置。
+- 调整批量下载返回值类型。
+- `IndexedEntity` 继承 `Sequence`，支持标准切片协议。
+- 更新 README 导览图。
+
+## [2.7.0] - 2026-06-15
+
+### Added
+- 新增完整的异步 Client、Downloader 和下载 API。
+- HTML 正则解析失败时自动保存网页内容，方便定位解析问题。
+- 新增同步与异步下载性能 Benchmark。
+
+### Changed
+- 补充异步 API 相关文档并优化既有文档。
