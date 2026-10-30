@@ -5,7 +5,7 @@ import re
 
 from ..core import jmcompat
 from ..core.models import PageUnit
-from ..core.parsing import extract_id, format_index_ranges
+from ..core.parsing import extract_id, format_index_ranges, split_targets
 from .catalog import get_album_detail_compat
 
 
@@ -47,6 +47,11 @@ class SelectionService:
                 raise ValueError("-c 和 -latest 不能同时使用")
             chapter_expr = f"latest:{latest_count}"
         return target, chapter_expr
+
+    @staticmethod
+    def split_targets(target_str):
+        """按英文/中文逗号拆分多目标（实现见 `core.parsing.split_targets`）。"""
+        return split_targets(target_str)
 
     @staticmethod
     def normalize_target(token):

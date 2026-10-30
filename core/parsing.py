@@ -19,6 +19,15 @@ def extract_id(message_str):
     return match.group() if match else None
 
 
+def split_targets(target_str):
+    """按英文/中文逗号拆分多目标：`1,2` 与 `1，2` 等价，忽略空白项。"""
+    return [
+        item.strip()
+        for item in re.split(r"[,，]", str(target_str or ""))
+        if item.strip()
+    ]
+
+
 def format_index_ranges(indexes):
     """把 [1,2,3,5,7,8] 压缩成 1-3,5,7-8"""
     values = sorted(set(int(x) for x in indexes))

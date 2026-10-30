@@ -8,7 +8,7 @@ from astrbot.api import logger
 import astrbot.api.message_components as Comp
 
 from ..core.downloader import ProgressDownloader
-from ..core.parsing import format_index_ranges
+from ..core.parsing import format_index_ranges, split_targets
 
 
 class DownloadRunner:
@@ -43,7 +43,7 @@ class DownloadRunner:
     async def run_download(self, event, target_str, output_format,
                            chapter_expr=None):
         """统一下载入口：PDF/ZIP、单本/批量、漫画ID/章节ID、QQ文件限额"""
-        raw_targets = [x.strip() for x in str(target_str).split(",") if x.strip()]
+        raw_targets = split_targets(target_str)
         if not raw_targets:
             yield self.messaging.plain(event, "❌ 未解析到有效ID")
             return

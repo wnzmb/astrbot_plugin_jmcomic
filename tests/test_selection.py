@@ -36,6 +36,27 @@ class SelectionTest(unittest.TestCase):
         self.assertEqual(self.service.normalize_target("p123"), ("p", "123"))
         self.assertEqual(self.service.normalize_target("-1"), ("", "-1"))
 
+    def test_split_targets_accepts_both_commas(self):
+        # BUG-029：中文全角逗号也要能拆分多目标
+        self.assertEqual(
+            self.service.split_targets("275013，1484418"),
+            ["275013", "1484418"],
+        )
+        self.assertEqual(
+            self.service.split_targets("275013,1484418"),
+            ["275013", "1484418"],
+        )
+        self.assertEqual(
+            self.service.split_targets(" 1 ,，2， , 3 "),
+            ["1", "2", "3"],
+        )
+        self.assertEqual(
+            self.service.split_targets("a1，p2，JM3"),
+            ["a1", "p2", "JM3"],
+        )
+        self.assertEqual(self.service.split_targets(""), [])
+        self.assertEqual(self.service.split_targets(None), [])
+
     def test_page_ranges(self):
         notes = []
         self.assertEqual(self.service.parse_page_range("201-400", notes), (201, 400))
