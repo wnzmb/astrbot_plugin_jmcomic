@@ -10,7 +10,7 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.10-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.11-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -300,7 +300,9 @@
 
 - [测试流程](docs/测试流程.md)
 - [功能对比与上游能力评估](docs/功能对比与上游能力评估.md)
-- [开发文档与修复日志](docs/开发文档与修复日志.md)
+- [上游能力与插件选型](docs/上游能力与插件选型.md)
+- [版本与缺陷记录](docs/版本与缺陷记录.md)
+- [维护备忘](docs/维护备忘.md)
 - [jmcomic 上游 CHANGELOG 快照](docs/jmcomic-CHANGELOG.md)
 
 单元测试（使用标准库 `unittest`，不依赖 pytest）：

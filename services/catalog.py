@@ -8,6 +8,21 @@ from astrbot.api import logger
 from ..core.parsing import format_index_token
 
 
+def get_album_detail_compat(client, album_id):
+    """获取漫画详情，并关闭 jmcomic 2.7.10+ 的章节 ID 自动重定向。
+
+    2.7.10 起 API 客户端的 ``get_album_detail`` 默认 ``allow_redirect=True``，
+    传入多章本子的子章节 ID 时会静默返回父本子，导致 ``/jmv``、``/jmlist``、
+    ``/jmc``、``/jmsub`` 的「章节 ID → 提示父本」路径失效（用户以为查的是章节，
+    实际看到的是整本）。这里显式传 ``allow_redirect=False``，保留畸形 album
+    识别；旧版库和 HTML 客户端没有该参数，回退到原调用。
+    """
+    try:
+        return client.get_album_detail(album_id, allow_redirect=False)
+    except TypeError:
+        return client.get_album_detail(album_id)
+
+
 class CatalogService:
     def __init__(self, settings, cache, text):
         self.settings = settings
@@ -554,13 +569,22 @@ class CatalogService:
     def looks_like_chapter_album(album) -> bool:
         """识别上游把章节 ID 当漫画 ID 返回的畸形 album 对象。
 
-        API 对章节 ID 会返回 name=zip 文件名、authors/tags=['filename']
-        且章节列表为父漫画的畸形数据；部分章节 ID（如 1236387）的
-        authors/tags 为空，但首项 photo_id 会变成父漫画 ID。两种特征
-        都用于提前给出可操作提示，避免 jmv/jmlist 展示错乱字段。
+        优先用 2.7.10 新增的 ``series_id``：本子自身的 ``series_id`` 等于
+        ``album_id``（或为 "0"），章节 ID 的 ``series_id`` 则是父本子 ID。
+
+        ``series_id`` 缺失时（HTML 客户端、旧版库）退回旧特征：API 对章节 ID
+        会返回 name=zip 文件名、authors/tags=['filename'] 且章节列表为父漫画的
+        畸形数据；部分章节 ID（如 1236387）的 authors/tags 为空，但首项
+        photo_id 会变成父漫画 ID。这些特征都用于提前给出可操作提示，避免
+        jmv/jmlist 展示错乱字段。
         """
         if album is None:
             return False
+        album_id = str(getattr(album, "album_id", "") or "").strip()
+        series_id = str(getattr(album, "series_id", "") or "").strip()
+        if series_id.isdigit() and album_id and series_id not in ("0", album_id):
+            return True
+
         authors = getattr(album, "authors", []) or []
         tags = getattr(album, "tags", []) or []
         if isinstance(authors, str):
@@ -574,7 +598,6 @@ class CatalogService:
         ):
             return True
 
-        album_id = str(getattr(album, "album_id", "") or "").strip()
         try:
             first = next(iter(album))
         except (TypeError, StopIteration):
@@ -584,11 +607,15 @@ class CatalogService:
 
     @staticmethod
     def chapter_album_parent_id(album, album_id) -> str:
-        """从畸形章节 album 的首项提取父漫画ID。
+        """提取章节所属的父漫画 ID。
 
-        API 返回的畸形章节 album 里，第一项通常是父漫画的占位章节，
-        其 photo_id 就是父漫画ID（例如 275013 的首项 photo_id=43164）。
+        优先用 ``series_id``（2.7.10+），缺失时退回旧逻辑：API 返回的畸形章节
+        album 里，第一项通常是父漫画的占位章节，其 photo_id 就是父漫画ID
+        （例如 275013 的首项 photo_id=43164）。
         """
+        series_id = str(getattr(album, "series_id", "") or "").strip()
+        if series_id.isdigit() and series_id not in ("0", str(album_id)):
+            return series_id
         try:
             first = next(iter(album))
         except (TypeError, StopIteration):

@@ -8,6 +8,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain
 import astrbot.api.message_components as Comp
 
 from ..core.parsing import parse_positive_page
+from ..services.catalog import get_album_detail_compat
 
 
 class AlbumHandler:
@@ -83,7 +84,7 @@ class AlbumHandler:
 
         try:
             client = self.client.get_client()
-            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
 
             if self.catalog.looks_like_chapter_album(album):
                 parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)
@@ -166,6 +167,15 @@ class AlbumHandler:
             lines.append(f"  👀 观看:      {views or '未知'}")
             lines.append(f"  ❤️ 点赞:      {likes or '未知'}")
             lines.append(f"  💬 评论:      {comment_count if comment_count else '未知'}")
+            # 账号状态：API 客户端会返回真实值，HTML 客户端恒为 False，
+            # 因此只在为 True 时展示，避免把「未知」误报成「未收藏」。
+            status_bits = []
+            if getattr(album, 'is_favorite', False):
+                status_bits.append("⭐ 已收藏")
+            if getattr(album, 'liked', False):
+                status_bits.append("👍 已点赞")
+            if status_bits:
+                lines.append(f"  📌 状态:      {' | '.join(status_bits)}")
             lines.append(sep)
             if '-tag' not in options:
                 lines.append(f"  🏷️ 标签:  {tag_str}")
@@ -263,7 +273,7 @@ class AlbumHandler:
 
         try:
             client = self.client.get_client()
-            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
 
             if self.catalog.looks_like_chapter_album(album):
                 parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)

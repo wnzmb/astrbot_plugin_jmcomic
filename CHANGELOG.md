@@ -1,5 +1,20 @@
 # 更新日志
 
+## v0.7.11 - 2026-10-30
+
+### 🐛 修复
+- 适配 jmcomic 2.7.10 的 `get_album_detail` 自动重定向：新增 `get_album_detail_compat()`，`/jmv`、`/jmlist`、`/jmc`、`/jmsub` 与下载目标识别统一传 `allow_redirect=False`，恢复「输入章节 ID 时提示所属漫画」的行为，不再静默展示父本
+- `/jmstop` 改用 `DownloadControl` 协作式取消：先置位取消信号再取消 asyncio 任务，整本与单章下载都能尽快停止，减少无效流量和半成品文件
+- `/jmv` 展示收藏/点赞状态（仅在为真时显示，避免 HTML 客户端把未知误报成未收藏）
+
+### 🔧 变更
+- 章节 ID 识别优先使用 jmcomic 2.7.10 新增的 `series_id`，`authors/tags == filename` 与首项 `photo_id` 降级为兜底判断
+- 文档整理：`REFACTOR_PLAN.md`（已完成的重构计划）删除；`开发文档与修复日志.md` 拆分为 `上游能力与插件选型.md`、`版本与缺陷记录.md`、`维护备忘.md`；`精读分析与优化建议.md` 的遗留结论并入选型文档后删除
+- 新增 `docs/功能对比与上游能力评估.md`，记录插件与 jmcomic 2.7.10 的能力矩阵与升级检查清单
+
+### 🧪 测试
+- 新增 `tests/test_catalog.py`：覆盖 `allow_redirect=False` 传参、旧版/HTML 客户端回退、`series_id` 章节判定与父本提取
+
 ## v0.7.10 - 2026-10-30
 
 ### 🔧 变更

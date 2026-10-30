@@ -6,6 +6,7 @@ import math
 from astrbot.api.event import AstrMessageEvent
 
 from ..core.parsing import parse_positive_page
+from ..services.catalog import get_album_detail_compat
 
 
 class LibraryHandler:
@@ -283,7 +284,7 @@ class LibraryHandler:
             client = self.client.get_client()
 
             # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
-            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
             if self.catalog.looks_like_chapter_album(album):
                 parent_id = await self.catalog.resolve_chapter_album_parent(client, album, album_id)
                 parent_line = (

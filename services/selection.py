@@ -7,6 +7,7 @@ from jmcomic.jm_exception import MissingAlbumPhotoException
 
 from ..core.models import PageUnit
 from ..core.parsing import extract_id, format_index_ranges
+from .catalog import get_album_detail_compat
 
 
 class SelectionService:
@@ -87,15 +88,15 @@ class SelectionService:
                     if parent_id and parent_id != target_id:
                         kind = "photo"
                     else:
-                        album_probe = await asyncio.to_thread(client.get_album_detail, target_id)
+                        album_probe = await asyncio.to_thread(get_album_detail_compat, client, target_id)
                         kind = "album"
                 except MissingAlbumPhotoException:
-                    album_probe = await asyncio.to_thread(client.get_album_detail, target_id)
+                    album_probe = await asyncio.to_thread(get_album_detail_compat, client, target_id)
                     kind = "album"
             self.state.id_type_cache[cache_key] = kind
 
         if kind == "album":
-            album = album_probe or await asyncio.to_thread(client.get_album_detail, target_id)
+            album = album_probe or await asyncio.to_thread(get_album_detail_compat, client, target_id)
             chapters = list(album) if hasattr(album, "__iter__") else []
             return {
                 "kind": "album",
@@ -111,7 +112,7 @@ class SelectionService:
             parent_id = str(getattr(photo, "album_id", "") or "")
             if parent_id and parent_id != target_id:
                 try:
-                    album = await asyncio.to_thread(client.get_album_detail, parent_id)
+                    album = await asyncio.to_thread(get_album_detail_compat, client, parent_id)
                 except Exception:
                     album = None
         return {

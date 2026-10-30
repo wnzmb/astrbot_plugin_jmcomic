@@ -4,6 +4,8 @@ import asyncio
 
 from astrbot.api.event import AstrMessageEvent
 
+from ..services.catalog import get_album_detail_compat
+
 
 class SubscribeHandler:
     def __init__(self, settings, access, client, catalog, selection, subscriptions, text, messaging):
@@ -92,7 +94,7 @@ class SubscribeHandler:
         yield self.messaging.plain(event, f"🔔 正在读取 JM{album_id} 的话信息...")
         try:
             client = await asyncio.to_thread(self.client.get_client)
-            album = await asyncio.to_thread(client.get_album_detail, album_id)
+            album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
             if self.catalog.looks_like_chapter_album(album):
                 parent_id = await self.catalog.resolve_chapter_album_parent(
                     client, album, album_id
