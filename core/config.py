@@ -279,7 +279,7 @@ class PluginSettings:
         )
         configured_pages = int(config.get("pdf_page_limit", 100) or 0)
         # ZIP 单章页数上限，0 表示不按页数切分，只按章数合并
-        configured_zip_pages = int(config.get("zip_page_limit", 300) or 0)
+        configured_zip_pages = int(config.get("zip_page_limit", 200) or 0)
 
         option = _build_option(
             client_type=client_type,
@@ -339,10 +339,10 @@ class PluginSettings:
             hourly_file_limit=max(0, int(config.get("hourly_file_limit", 0) or 0)),
             max_batch_targets=max_batch_targets,
             send_cover=send_cover,
-            send_interval=max(0.0, float(config.get("send_interval", 1.5))),
+            send_interval=max(0.0, float(config.get("send_interval", 5.0))),
             zip_group_size=min(50, max(1, configured_group or 5)),
-            pdf_page_limit=min(2000, max(1, configured_pages or 100)),
-            zip_page_limit=min(2000, max(0, configured_zip_pages)),
+            pdf_page_limit=min(500, max(1, configured_pages or 100)),
+            zip_page_limit=min(500, max(0, configured_zip_pages)),
             include_info_page=include_info_page,
             # 翻页会话有效期：发送“下一页/下页”或 /jmnext 时使用
             page_turn_timeout=max(0, int(config.get("page_turn_timeout", 60) or 0)),

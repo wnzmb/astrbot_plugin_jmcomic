@@ -22,6 +22,20 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.subscription_push_limit, 10)
         self.assertTrue(settings.page_turn_keyword_enabled)
         self.assertTrue(settings.include_info_page)
+        self.assertEqual(settings.send_interval, 5.0)
+        self.assertEqual(settings.pdf_page_limit, 100)
+        self.assertEqual(settings.zip_page_limit, 200)
+
+    def test_page_limits_are_clamped_to_500(self):
+        settings = PluginSettings.from_config(
+            {
+                "pdf_page_limit": 9999,
+                "zip_page_limit": 9999,
+            },
+            ROOT,
+        )
+        self.assertEqual(settings.pdf_page_limit, 500)
+        self.assertEqual(settings.zip_page_limit, 500)
 
     def test_new_options_are_parsed_and_clamped(self):
         settings = PluginSettings.from_config(
