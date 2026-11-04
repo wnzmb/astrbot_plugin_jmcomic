@@ -94,6 +94,24 @@ class UpstreamContractTest(unittest.TestCase):
         )
         self.assertTrue(hasattr(module_config, "DOMAIN_API_UPDATED_LIST"))
 
+    # ---------- 登录态（v0.7.15 起依赖 2.7.11 的 auth 写回） ----------
+    def test_option_auth_login_helper(self):
+        option = jmcomic.JmOption.construct({})
+        if not hasattr(option, "login_with_option_auth"):
+            self.skipTest("jmcomic < 2.7.11 没有 auth 登录接口，插件会退回 client.login()")
+        self.assertTrue(hasattr(option, "auth"))
+        self.assertTrue(callable(option.login_with_option_auth))
+
+    def test_async_client_registry_has_async_api(self):
+        registry = jmcomic.JmModuleConfig.REGISTRY_ASYNC_CLIENT
+        self.assertIn("async_api", registry, "下载器依赖 async_api 客户端")
+
+    def test_async_html_registered(self):
+        registry = jmcomic.JmModuleConfig.REGISTRY_ASYNC_CLIENT
+        if "async_html" not in registry:
+            self.skipTest("jmcomic < 2.7.11 没有 async_html")
+        self.assertIn("async_html", registry)
+
     # ---------- 其它已用接口 ----------
     def test_favorite_and_comment_apis(self):
         for name in (

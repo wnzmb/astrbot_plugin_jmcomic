@@ -1,5 +1,23 @@
 # 更新日志
 
+## v0.7.15 - 2026-11-04
+
+### 🔧 变更
+- 适配 jmcomic 2.7.11：登录态迁移到顶层 `auth`。`_build_option()` 只写账号密码、不再注入 `login` 插件；`JmClientManager` 首次使用与 TTL 到期时调用 `option.login_with_option_auth(force=True)`，把 cookies/user_id 写回 `auth` 后再从 option 重建客户端，避免下载器等新建客户端长时间运行后仍带初始化阶段的旧 cookies
+- 2.7.10 及以前自动回退：`JmOption` 没有 `auth` 参数时继续注入 `login` 插件并使用 `client.login()`
+- `configured_username()`、`/jmme`、`/jmfav` 改读 `option.auth.username`（缺失时回退旧版 login 插件配置）
+- `jmcomic` 最低版本提升到 **2.7.11**；README、帮助文案、requirements 同步
+
+### 📝 文档
+- `docs/jmcomic-CHANGELOG.md` 快照更新到 2.7.11
+- 「上游耦合清单」新增第 8 条：`option.auth` 与 `login_with_option_auth()`
+- `docs/功能对比与上游能力评估.md` 新增 §5.6「2.7.11 的行为变化：登录态写回与 `async_html`」
+- `docs/测试流程.md` 新增 R20（登录态写回、TTL 重登、html 模式下载）
+
+### 🧪 测试
+- 新增 `tests/test_client_login.py`（7 项）：auth 写回、登录后重建客户端、旧版回退、无凭据跳过、失败提示、`configured_username` 优先级
+- 契约测试新增 3 项（`option.auth`、`async_api` 注册、`async_html` 注册）；全量 76 项通过
+
 ## v0.7.14 - 2026-10-30
 
 ### 🐛 修复

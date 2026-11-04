@@ -129,15 +129,8 @@ class AccountHandler:
         try:
             client = self.client.get_client()
 
-            # 从配置读取登录用户名
-            username = ""
-            try:
-                for plugin in self.settings.option.plugins.after_init:
-                    if plugin.get('plugin') == 'login':
-                        username = plugin.get('kwargs', {}).get('username', '')
-                        break
-            except Exception:
-                pass
+            # 登录用户名：优先 option.auth（2.7.11+），兼容旧版 login 插件配置
+            username = self.client.configured_username()
 
             if not username:
                 yield self.messaging.plain(event, "⚠️ 未配置登录账号，请在插件配置中填写账号密码")

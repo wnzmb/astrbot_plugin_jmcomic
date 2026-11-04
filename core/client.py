@@ -57,25 +57,47 @@ class JmClientManager:
         logger.info("检测到 jmcomic 模块被重载，已重建客户端")
 
     def _login(self, client):
+        """登录，并把登录态写回 option.auth，返回可用的客户端。
+
+        2.7.11 起 ``client.login()`` 只作用于当前实例，不再修改全局 option；
+        而下载器会用 option 新建客户端。因此有 ``login_with_option_auth`` 时
+        优先走它（cookies/user_id 会写回 auth），再从 option 重建客户端，
+        避免长时间运行后新客户端仍带初始化阶段的旧 cookies。
+        """
         username = self.settings.username
         password = self.settings.password
-        if username and password:
+        if not (username and password):
+            self._cached_at = time.monotonic()
+            return client
+
+        option = self.settings.option
+        refresh_auth = getattr(option, "login_with_option_auth", None)
+        auth = getattr(option, "auth", None)
+        if callable(refresh_auth) and auth is not None:
+            try:
+                store = auth.src_dict if hasattr(auth, "src_dict") else auth
+                store["username"] = username
+                store["password"] = password
+                refresh_auth(force=True)
+                client = option.new_jm_client()
+                logger.info("JMComic 客户端登录成功（登录态已写回 option.auth）")
+            except Exception as e:
+                raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
+        else:
             try:
                 client.login(username, password)
                 logger.info("JMComic 客户端登录成功")
             except Exception as e:
                 raise Exception(f"登录失败，请检查账号密码或镜像域名配置：{e}")
         self._cached_at = time.monotonic()
+        return client
 
     def get_client(self):
         """创建客户端；若配置了账号密码则登录，登录态过期后自动重登。
 
-        签到、收藏夹、搜索等接口需要登录态：
-        - jmcomic 登录插件只把 cookies 写回 option，不传播 _user_id；
-          新 client 的 _user_id 恒为 None，daily_checkin/get_daily 会直接报
-          "签到需要传入 user_id 参数，或者先调用 login 方法"。
-        - 登录失败在插件初始化阶段会被 safe=True 吞掉，导致后续请求 401。
-        这里在每次创建客户端时主动 login 一次，并按 TTL 刷新。
+        签到、收藏夹、搜索等接口需要登录态；下载器则用 option 新建客户端，
+        所以登录必须写回 option.auth（见 ``_login``），否则新客户端拿不到
+        cookies 与 user_id。
         """
         # 优先返回仍在有效期内的已登录客户端
         with self._client_lock:
@@ -88,7 +110,7 @@ class JmClientManager:
 
             if self._cached_client is None:
                 self._cached_client = self.settings.option.new_jm_client()
-            self._login(self._cached_client)
+            self._cached_client = self._login(self._cached_client)
             return self._cached_client
 
     def refresh_client(self):
@@ -120,8 +142,18 @@ class JmClientManager:
             self._cached_at = 0.0
 
     def configured_username(self):
+        """返回配置里的登录用户名：优先 option.auth（2.7.11+），兼容旧版 login 插件。"""
+        option = getattr(self.settings, "option", None)
+        auth = getattr(option, "auth", None)
+        if auth is not None:
+            try:
+                name = auth.get("username") if hasattr(auth, "get") else None
+            except Exception:
+                name = None
+            if name:
+                return str(name)
         try:
-            for plugin in self.settings.option.plugins.after_init:
+            for plugin in option.plugins.after_init:
                 if plugin.get('plugin') == 'login':
                     return plugin.get('kwargs', {}).get('username', '') or ''
         except Exception:

@@ -112,15 +112,8 @@ class FavoritesHandler:
         try:
             client = self.client.get_client()
 
-            # 从配置里读登录的用户名
-            username = ""
-            try:
-                for plugin in self.settings.option.plugins.after_init:
-                    if plugin.get('plugin') == 'login':
-                        username = plugin.get('kwargs', {}).get('username', '')
-                        break
-            except Exception:
-                pass
+            # 登录用户名：优先 option.auth（2.7.11+），兼容旧版 login 插件配置
+            username = self.client.configured_username()
 
             if not username:
                 yield self.messaging.plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")

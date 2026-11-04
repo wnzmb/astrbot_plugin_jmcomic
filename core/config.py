@@ -1,5 +1,6 @@
 """插件配置：把 AstrBotConfig 解析成只读的 PluginSettings，并构建 jmcomic option。"""
 
+import inspect
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -130,7 +131,19 @@ def _build_option(
         },
     }
 
-    # 请求级域名轮询放在登录之前，确保登录与后续 client 都应用该策略。
+    # 2.7.11 起登录态统一放在 option.auth：这里只放账号密码，真正的登录由
+    # JmClientManager 首次使用时调用 login_with_option_auth() 完成，
+    # 插件初始化阶段不再发起同步登录请求。
+    # 2.7.10 及以前没有 auth 参数，继续用 login 插件保持兼容。
+    supports_auth = "auth" in inspect.signature(jm.JmOption.__init__).parameters
+    if supports_auth:
+        option_dict["auth"] = (
+            {"username": username, "password": password}
+            if username and password
+            else {}
+        )
+
+    # 请求级域名轮询放在 after_init 首位，后续 client 都应用该策略。
     # 同步客户端（搜索/详情/单章下载等）走 advanced_retry；
     # 异步整本下载器自带域名轮询，外层仍有整任务 3 次重试。
     option_dict["plugins"]["after_init"].append({
@@ -140,13 +153,12 @@ def _build_option(
         }
     })
 
-    # 如果填了账号密码，加登录插件
-    if username and password:
+    if not supports_auth and username and password:
         option_dict["plugins"]["after_init"].append({
             "plugin": "login",
             "kwargs": {
                 "username": username,
-                "password": password
+                "password": password,
             }
         })
 

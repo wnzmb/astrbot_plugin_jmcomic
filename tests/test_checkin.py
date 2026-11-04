@@ -83,6 +83,9 @@ class FakeClientManager:
     def refresh_client(self):
         return self.client
 
+    def configured_username(self):
+        return "100"
+
 
 class FakeMessaging:
     def plain(self, event, text):

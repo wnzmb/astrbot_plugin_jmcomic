@@ -10,11 +10,11 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.14-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.15-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
-  <a href="https://github.com/hect0x7/JMComic-Crawler-Python"><img src="https://img.shields.io/badge/JMCOMIC-≥2.7.10-9C27B0?style=for-the-badge" alt="JMComic"></a>
+  <a href="https://github.com/hect0x7/JMComic-Crawler-Python"><img src="https://img.shields.io/badge/JMCOMIC-≥2.7.11-9C27B0?style=for-the-badge" alt="JMComic"></a>
   <a href="https://github.com/wnzmb/astrbot_plugin_jmcomic"><img src="https://img.shields.io/badge/UPDATED-2026.10.30-2196F3?style=for-the-badge" alt="Updated"></a>
 </div>
 
@@ -73,7 +73,7 @@
 
 ### 依赖要求
 
-- **jmcomic >= 2.7.10**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
+- **jmcomic >= 2.7.11**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
 - **img2pdf >= 0.5.1 / reportlab >= 4.0.0**（PDF 合成优先 img2pdf，失败时 reportlab 逐页写入，最后回退 Pillow；用于降低大文件内存占用）
 - **PySocks >= 1.7.1**（SOCKS5 代理；不配置代理时不影响普通下载）
 - **pypinyin / zhconv / Pillow / PyYAML**（敏感词转拼音、简繁转换、PDF 回退与配置读取，随 `requirements.txt` 安装）
