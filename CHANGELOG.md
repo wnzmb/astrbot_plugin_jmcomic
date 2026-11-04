@@ -1,5 +1,12 @@
 # 更新日志
 
+## v0.7.17 - 2026-11-04
+
+### 🐛 修复
+- BUG-030 二次修复：v0.7.16 的 `page_limit` 没有生效，因为 `ensure_photo_downloaded()` 调用 `download_photo_async` 时未传 `downloader=`，库用了默认 `JmAsyncDownloader`，插件的 `before_image` 钩子不参与。现补传 `downloader=ProgressDownloader.current_impl()`
+- 新增回归测试 `test_ensure_photo_downloaded_uses_custom_downloader_and_limit`：断言传入自定义 downloader、`control`，且调用时 `_PAGE_LIMIT` 为 `max_page`（旧代码会失败）
+- 实测走插件方法限制 3 页下载 `43164` 第 1 话（1390 页），只落盘 `00001~00003`
+
 ## v0.7.16 - 2026-11-04
 
 ### 🐛 修复

@@ -199,7 +199,10 @@ class DownloadService:
             try:
                 with page_limit(max_page):
                     result = await jm.download_photo_async(
-                        photo.photo_id, self.client.current_option(), control=control
+                        photo.photo_id,
+                        self.client.current_option(),
+                        downloader=ProgressDownloader.current_impl(),
+                        control=control,
                     )
                 break
             except asyncio.CancelledError:

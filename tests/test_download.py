@@ -72,6 +72,63 @@ class DownloadCompleteTest(unittest.TestCase):
         self.assertFalse(_should_skip_image(SimpleNamespace(index=-1), 50))
         self.assertFalse(_should_skip_image(SimpleNamespace(index="x"), 50))
 
+    def test_ensure_photo_downloaded_uses_custom_downloader_and_limit(self):
+        """BUG-030 回归：单章下载必须用 ProgressDownloader，否则 page_limit 不生效。"""
+        from unittest import mock
+
+        from astrbot_plugin_jmcomic.core.downloader import _PAGE_LIMIT
+
+        class FakeJm:
+            def __init__(self):
+                self.limits = []
+                self.kwargs = []
+
+            def DownloadControl(self):
+                class _Control:
+                    def cancel(self, reason=""):
+                        return True
+
+                return _Control()
+
+            async def download_photo_async(self, photo_id, option, **kwargs):
+                self.limits.append(_PAGE_LIMIT.get())
+                self.kwargs.append(kwargs)
+                detail = SimpleNamespace(photo_id=photo_id, page_arr=["1"], name="x")
+                return SimpleNamespace(detail=detail, duration=0)
+
+        class FakeClient:
+            def current_option(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(download_base_dir=Path(tmp))
+            service = DownloadService(
+                settings, FakeClient(), CacheService(settings), None
+            )
+            photo = SimpleNamespace(photo_id="1", page_arr=None, page_count=0)
+            fake = FakeJm()
+            from astrbot_plugin_jmcomic.core import jmcompat as real_compat
+
+            real_module = real_compat.module
+
+            def fake_module(name="jmcomic"):
+                if name == "jmcomic":
+                    return fake
+                return real_module(name)
+
+            with mock.patch(
+                "astrbot_plugin_jmcomic.services.download.jmcompat.module",
+                side_effect=fake_module,
+            ), mock.patch.object(
+                service, "is_photo_complete", return_value=False
+            ):
+                asyncio.run(service.ensure_photo_downloaded(photo, max_page=50))
+
+        self.assertEqual(fake.limits, [50])
+        self.assertIn("downloader", fake.kwargs[0])
+        self.assertEqual(fake.kwargs[0]["downloader"].__name__, "JmProgressDownloader")
+        self.assertIn("control", fake.kwargs[0])
+
 
 if __name__ == "__main__":
     unittest.main()
