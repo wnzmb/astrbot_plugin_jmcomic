@@ -55,7 +55,13 @@ class UpstreamContractTest(unittest.TestCase):
         self.assertTrue(issubclass(jmcomic.DownloadCancelledException, BaseException))
 
     def test_async_downloader_hooks(self):
-        for name in ("before_album", "before_photo", "after_image", "after_album"):
+        for name in (
+            "before_album",
+            "before_photo",
+            "before_image",
+            "after_image",
+            "after_album",
+        ):
             self.assertTrue(
                 hasattr(jmcomic.JmAsyncDownloader, name),
                 f"JmAsyncDownloader 缺少钩子 {name}",
