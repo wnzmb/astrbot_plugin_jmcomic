@@ -9,13 +9,13 @@
     ],
     "labels": [
       "API 客户端（推荐）",
-      "HTML 客户端"
+      "HTML 客户端（备选）"
     ],
     "subtitles": [
       "功能全：收藏 / 评论翻页 / 签到 / 域名自动更新",
-      "支持分类筛选，但收藏与评论功能受限"
+      "部分页面解析更稳；不支持收藏/评论翻页/签到，插件也未提供分类浏览命令"
     ],
-    "hint": "api=推荐，支持收藏、评论翻页和签到，不支持分类筛选；html=支持分类筛选，但收藏和评论功能受限。切换后需重载插件。"
+    "hint": "api=推荐，支持收藏、评论翻页和签到；html=部分页面解析更稳，但不支持收藏添加/删除、评论翻页和签到，插件也未提供分类浏览命令（两种客户端都没有接入 categories_filter）。切换后需重载插件。"
   },
   "username": {
     "type": "string",
@@ -38,46 +38,30 @@
     "description": "镜像站域名",
     "hint": "可填多个，英文逗号分隔，插件会自动切换可用域名。留空使用内置域名；例如 www.cdnhjk.net,comic18j-guta.site"
   },
-  "allow_group": {
+  "use_proxy": {
     "type": "bool",
-    "default": true,
-    "description": "允许群聊使用",
-    "hint": "关闭后只允许私聊使用。群聊消息更容易触发平台审核，建议只对信任的群开启。"
-  },
-  "enabled_groups": {
-    "type": "string",
-    "default": "",
-    "description": "群聊白名单",
-    "hint": "只允许这些群号使用插件，英文逗号分隔，例如 123456,789012；留空表示不限制（仍受 allow_group 控制）。私聊不受影响。"
-  },
-  "owner_ids": {
-    "type": "string",
-    "default": "",
-    "description": "号主 ID",
+    "default": false,
+    "description": "启用代理",
     "obvious_hint": true,
-    "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
+    "hint": "开启后在访问禁漫站点时使用下方代理地址；关闭时显式直连，避免系统代理环境变量干扰。修改后需重载插件。"
   },
-  "photo_threads": {
+  "proxy_url": {
+    "type": "string",
+    "default": "",
+    "description": "代理地址",
+    "obvious_hint": true,
+    "hint": "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；启用代理时必填。SOCKS5 需要 PySocks 依赖。"
+  },
+  "login_ttl_minutes": {
     "type": "int",
-    "default": 2,
-    "description": "话并发数",
+    "default": 10,
+    "description": "登录态缓存（分钟）",
     "slider": {
       "min": 1,
-      "max": 16,
+      "max": 120,
       "step": 1
     },
-    "hint": "同时下载的话数量，默认 2。调高会加快下载，但更容易被站点限流。"
-  },
-  "image_threads": {
-    "type": "int",
-    "default": 5,
-    "description": "图片并发数",
-    "slider": {
-      "min": 1,
-      "max": 32,
-      "step": 1
-    },
-    "hint": "单话内同时下载的图片数量，默认 5。网络不稳定或经常失败时建议降低。"
+    "hint": "登录成功后客户端缓存多久，默认 10 分钟；过期后下一条需要登录的命令会自动重登。频繁 401 可适当缩短。"
   },
   "request_timeout": {
     "type": "int",
@@ -101,6 +85,28 @@
     },
     "hint": "jmcomic 对单次请求的重试次数，默认 5。网络稳定可降低以减少等待，弱网可适当提高；过高会放大限流影响。"
   },
+  "photo_threads": {
+    "type": "int",
+    "default": 2,
+    "description": "话并发数",
+    "slider": {
+      "min": 1,
+      "max": 16,
+      "step": 1
+    },
+    "hint": "同时下载的话数量，默认 2。调高会加快下载，但更容易被站点限流。"
+  },
+  "image_threads": {
+    "type": "int",
+    "default": 5,
+    "description": "图片并发数",
+    "slider": {
+      "min": 1,
+      "max": 32,
+      "step": 1
+    },
+    "hint": "单话内同时下载的图片数量，默认 5。网络不稳定或经常失败时建议降低。"
+  },
   "download_retry_times": {
     "type": "int",
     "default": 3,
@@ -123,17 +129,6 @@
     },
     "hint": "每次下载重试前的等待时间，默认 3 秒。网络被限流时可适当调大；填 0 表示立即重试。"
   },
-  "login_ttl_minutes": {
-    "type": "int",
-    "default": 10,
-    "description": "登录态缓存（分钟）",
-    "slider": {
-      "min": 1,
-      "max": 120,
-      "step": 1
-    },
-    "hint": "登录成功后客户端缓存多久，默认 10 分钟；过期后下一条需要登录的命令会自动重登。频繁 401 可适当缩短。"
-  },
   "send_interval": {
     "type": "float",
     "default": 5,
@@ -151,38 +146,23 @@
     "description": "详情默认发送封面",
     "hint": "开启后 /jmv 默认下载并发送封面 PDF；关闭后所有详情都不发封面，单次仍可用 -pic 临时关闭。封面会转成 PDF 走文件通道，降低图片审核风险。"
   },
-  "per_page": {
-    "type": "int",
-    "default": 10,
-    "description": "分页每页条数",
-    "slider": {
-      "min": 5,
-      "max": 20,
-      "step": 1
-    },
-    "hint": "搜索、jmlist、jmhis 统一每页显示条数，默认 10，范围 5-20；jmhis -all 为每用户每页固定 10 条。"
+  "storage_dir": {
+    "type": "string",
+    "default": "",
+    "description": "存储根目录",
+    "obvious_hint": true,
+    "hint": "下载图片与 ZIP 的根目录；留空使用 AstrBot 的 data/plugin_data/astrbot_plugin_jmcomic 目录。可填绝对路径（如 D:\\JM）；相对路径按默认目录解析。修改后旧缓存不会自动迁移，历史/订阅等状态文件仍留在默认目录。"
   },
-  "zip_group_size": {
+  "cache_days": {
     "type": "int",
-    "default": 5,
-    "description": "ZIP 合并话数",
-    "slider": {
-      "min": 1,
-      "max": 50,
-      "step": 1
-    },
-    "hint": "每 N 话合并成一个 ZIP，默认 5；填 1 表示每话一个。同时受下方 ZIP 页数上限约束，先到哪个就封口。ZIP 内每个话目录名统一为 P{章节id}_第N话，如“P1172870_第36话”。"
-  },
-  "zip_page_limit": {
-    "type": "int",
-    "default": 200,
-    "description": "ZIP 每册页数上限",
+    "default": 7,
+    "description": "缓存保留天数",
     "slider": {
       "min": 0,
-      "max": 500,
-      "step": 10
+      "max": 365,
+      "step": 1
     },
-    "hint": "单个 ZIP 最多包含多少页，默认 200，最大 500；0 表示不按页数限制，只按话数合并。单话超过此页数时会自动切成多个 ZIP，页段文件名带 _p起始-结束。"
+    "hint": "启动时清理超过 N 天未访问的漫画缓存目录，0 表示永久保留。缓存可避免重复下载，但会占用磁盘空间。"
   },
   "pdf_page_limit": {
     "type": "int",
@@ -195,11 +175,107 @@
     },
     "hint": "PDF 优先整话装册，达到上限就换下一册；单话超过上限时自动按页切分成多册，例如 500 页会切成 100×5，不会生成一个超大 PDF。开启下方“包含信息页”时，每个分册都会加漫画信息页。默认 100 页，最大 500 页。"
   },
+  "zip_page_limit": {
+    "type": "int",
+    "default": 200,
+    "description": "ZIP 每册页数上限",
+    "slider": {
+      "min": 0,
+      "max": 500,
+      "step": 10
+    },
+    "hint": "单个 ZIP 最多包含多少页，默认 200，最大 500；0 表示不按页数限制，只按话数合并。单话超过此页数时会自动切成多个 ZIP，页段文件名带 _p起始-结束。"
+  },
+  "zip_group_size": {
+    "type": "int",
+    "default": 5,
+    "description": "ZIP 合并话数",
+    "slider": {
+      "min": 1,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "每 N 话合并成一个 ZIP，默认 5；填 1 表示每话一个。同时受下方 ZIP 页数上限约束，先到哪个就封口。ZIP 内每个话目录名统一为 P{章节id}_第N话，如“P1172870_第36话”。"
+  },
   "include_info_page": {
     "type": "bool",
     "default": true,
     "description": "包含漫画信息页",
     "hint": "开启后 PDF 每个分册加一页漫画信息，ZIP 根目录附漫画信息.txt；关闭可略微减小文件。PDF 文档标题属性始终保留。"
+  },
+  "allow_group": {
+    "type": "bool",
+    "default": true,
+    "description": "允许群聊使用",
+    "hint": "关闭后只允许私聊使用。群聊消息更容易触发平台审核，建议只对信任的群开启。"
+  },
+  "enabled_groups": {
+    "type": "string",
+    "default": "",
+    "description": "群聊白名单",
+    "hint": "只允许这些群号使用插件，英文逗号分隔，例如 123456,789012；留空表示不限制（仍受 allow_group 控制）。私聊不受影响。"
+  },
+  "owner_ids": {
+    "type": "string",
+    "default": "",
+    "description": "号主 ID",
+    "obvious_hint": true,
+    "hint": "只有这里填写的发送者才能使用签到/收藏/用户信息等账号命令。不是 JM 用户名；先发 /jmwhoami 查看，多个用英文逗号分隔。"
+  },
+  "daily_file_limit": {
+    "type": "int",
+    "default": 0,
+    "description": "每日文件上限",
+    "slider": {
+      "min": 0,
+      "max": 500,
+      "step": 1
+    },
+    "hint": "本插件每天最多发送的文件数，默认 0（不限制）。只统计本插件发送的文件。"
+  },
+  "hourly_file_limit": {
+    "type": "int",
+    "default": 0,
+    "description": "每小时文件上限",
+    "slider": {
+      "min": 0,
+      "max": 200,
+      "step": 1
+    },
+    "hint": "本插件每小时最多发送的文件数，默认 0（不限制）。超限后停止发送并提示用 -c 继续。"
+  },
+  "max_batch_targets": {
+    "type": "int",
+    "default": 0,
+    "description": "单次批量目标上限",
+    "slider": {
+      "min": 0,
+      "max": 50,
+      "step": 1
+    },
+    "hint": "一条 /jm 或 /jmzip 最多允许的漫画/章节目标数，默认 0（不限制）。可设为 10-20 防止误触超大批量；超出会直接拒绝，不会开始下载。"
+  },
+  "per_page": {
+    "type": "int",
+    "default": 10,
+    "description": "分页每页条数",
+    "slider": {
+      "min": 5,
+      "max": 20,
+      "step": 1
+    },
+    "hint": "搜索、jmlist、jmhis 统一每页显示条数，默认 10，范围 5-20；jmhis -all 为每用户每页固定 10 条。"
+  },
+  "comment_count": {
+    "type": "int",
+    "default": 10,
+    "description": "评论显示条数",
+    "slider": {
+      "min": 1,
+      "max": 10,
+      "step": 1
+    },
+    "hint": "每次查看评论最多显示的条数。"
   },
   "page_turn_timeout": {
     "type": "int",
@@ -218,17 +294,6 @@
     "description": "响应文字“下一页”",
     "hint": "开启后，在翻页会话有效期内发送纯文本“下一页/下页”即可翻页；关闭后只保留 /jmnext，避免普通聊天误触发。"
   },
-  "confirm_timeout": {
-    "type": "int",
-    "default": 30,
-    "description": "危险操作确认有效期（秒）",
-    "slider": {
-      "min": 5,
-      "max": 120,
-      "step": 5
-    },
-    "hint": "二次确认的有效时间，默认 30 秒；适用于 /jmclean 清理缓存和 /jmfav export 导出收藏夹。超时后需重新执行命令。"
-  },
   "page_prefetch_pages": {
     "type": "int",
     "default": 2,
@@ -240,63 +305,22 @@
     },
     "hint": "jmv/jmlist 显示当前页后，后台继续预取之后 N 页的话页数，默认 2；0=关闭。每页约 per_page 个章节详情请求，建议 2；5 已较激进，可能触发站点限流。"
   },
-  "subscribe_interval": {
+  "confirm_timeout": {
     "type": "int",
-    "default": 3600,
-    "description": "订阅检查间隔（秒）",
+    "default": 30,
+    "description": "危险操作确认有效期（秒）",
     "slider": {
-      "min": 0,
-      "max": 86400,
-      "step": 300
+      "min": 5,
+      "max": 120,
+      "step": 5
     },
-    "hint": "后台每隔多少秒检查一次订阅漫画的新话并推送，默认 3600（1 小时）；0 表示关闭后台检查，只保留 /jmsub 的订阅增删。"
+    "hint": "二次确认的有效时间，默认 30 秒；适用于 /jmclean 清理缓存和 /jmfav export 导出收藏夹。超时后需重新执行命令。"
   },
-  "subscription_push_limit": {
-    "type": "int",
-    "default": 10,
-    "description": "订阅推送话数上限",
-    "slider": {
-      "min": 1,
-      "max": 30,
-      "step": 1
-    },
-    "hint": "每次订阅推送最多列出多少条新增话，默认 10；超出只显示总数，避免一条消息过长。"
-  },
-  "use_proxy": {
+  "tease_enabled": {
     "type": "bool",
     "default": false,
-    "description": "启用代理",
-    "obvious_hint": true,
-    "hint": "开启后在访问禁漫站点时使用下方代理地址；关闭时显式直连，避免系统代理环境变量干扰。修改后需重载插件。"
-  },
-  "proxy_url": {
-    "type": "string",
-    "default": "",
-    "description": "代理地址",
-    "obvious_hint": true,
-    "hint": "例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；启用代理时必填。SOCKS5 需要 PySocks 依赖。"
-  },
-  "cache_days": {
-    "type": "int",
-    "default": 7,
-    "description": "缓存保留天数",
-    "slider": {
-      "min": 0,
-      "max": 365,
-      "step": 1
-    },
-    "hint": "启动时清理超过 N 天未访问的漫画缓存目录，0 表示永久保留。缓存可避免重复下载，但会占用磁盘空间。"
-  },
-  "comment_count": {
-    "type": "int",
-    "default": 10,
-    "description": "评论显示条数",
-    "slider": {
-      "min": 1,
-      "max": 10,
-      "step": 1
-    },
-    "hint": "每次查看评论最多显示的条数。"
+    "description": "下载次数调侃",
+    "hint": "下载到 3/5/7/10 等数量时随机发一句调侃提醒，默认关闭。觉得有意思或想增加互动时可开启。"
   },
   "history_max": {
     "type": "int",
@@ -308,12 +332,6 @@
       "step": 10
     },
     "hint": "每个用户最多保留的下载历史条数，用于 /jmhis 和下载次数调侃；0 表示保留所有历史。"
-  },
-  "tease_enabled": {
-    "type": "bool",
-    "default": false,
-    "description": "下载次数调侃",
-    "hint": "下载到 3/5/7/10 等数量时随机发一句调侃提醒，默认关闭。觉得有意思或想增加互动时可开启。"
   },
   "convert_enabled": {
     "type": "bool",
@@ -370,37 +388,26 @@
     "description": "jms 纯数字按车号查详情",
     "hint": "开启后 /jms 123456 会直接显示漫画详情（等同 /jmv 123456），不再当作搜索词；默认开启，纯数字直接查详情。"
   },
-  "daily_file_limit": {
+  "subscribe_interval": {
     "type": "int",
-    "default": 0,
-    "description": "每日文件上限",
+    "default": 3600,
+    "description": "订阅检查间隔（秒）",
     "slider": {
       "min": 0,
-      "max": 500,
-      "step": 1
+      "max": 86400,
+      "step": 300
     },
-    "hint": "本插件每天最多发送的文件数，默认 0（不限制）。只统计本插件发送的文件。"
+    "hint": "后台每隔多少秒检查一次订阅漫画的新话并推送，默认 3600（1 小时）；0 表示关闭后台检查，只保留 /jmsub 的订阅增删。"
   },
-  "hourly_file_limit": {
+  "subscription_push_limit": {
     "type": "int",
-    "default": 0,
-    "description": "每小时文件上限",
+    "default": 10,
+    "description": "订阅推送话数上限",
     "slider": {
-      "min": 0,
-      "max": 200,
+      "min": 1,
+      "max": 30,
       "step": 1
     },
-    "hint": "本插件每小时最多发送的文件数，默认 0（不限制）。超限后停止发送并提示用 -c 继续。"
-  },
-  "max_batch_targets": {
-    "type": "int",
-    "default": 0,
-    "description": "单次批量目标上限",
-    "slider": {
-      "min": 0,
-      "max": 50,
-      "step": 1
-    },
-    "hint": "一条 /jm 或 /jmzip 最多允许的漫画/章节目标数，默认 0（不限制）。可设为 10-20 防止误触超大批量；超出会直接拒绝，不会开始下载。"
+    "hint": "每次订阅推送最多列出多少条新增话，默认 10；超出只显示总数，避免一条消息过长。"
   }
 }

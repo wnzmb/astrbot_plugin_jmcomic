@@ -10,7 +10,7 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.21-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.22-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -40,13 +40,14 @@
 1. 在 AstrBot 管理面板 → 插件 → 安装插件 → 从链接安装
 2. 填入仓库地址：`https://github.com/wnzmb/astrbot_plugin_jmcomic`
 3. 安装完成后，点击插件齿轮图标，填写配置：
-   - 客户端类型：api（推荐，功能全）或 html（支持分类筛选）
+   - 客户端类型：api（推荐，功能全）或 html（备选，部分页面解析更稳；两种客户端都未提供分类浏览命令）
    - 用户名：你的站点账号（可选，签到/收藏需要）
    - 密码：你的站点密码（可选）
    - 镜像站域名：你能访问的镜像站（支持多个，用英文逗号分隔，自动切换可用的）
    - 号主ID `owner_ids`：JM 账号号主的发送者 ID，多个用英文逗号分隔；签到、收藏、用户信息只允许号主使用。QQ 官方机器人填 openid，可先发 `/jmwhoami` 查看
    - 群聊白名单 `enabled_groups`：只允许这些群号使用插件，英文逗号分隔；留空表示不限制。关闭 `allow_group` 时所有群禁用，私聊不受影响
    - 下载并发数、请求超时 `request_timeout`（默认 15 秒）、请求重试 `client_retry_times`（默认 5 次）：根据自己网络调整
+   - 存储根目录 `storage_dir`：下载图片与 ZIP 的输出位置，留空使用插件默认目录；可填 `D:\JM` 这类绝对路径（旧缓存不会自动迁移，历史/订阅等状态文件仍在默认目录）
    - 下载重试 `download_retry_times` / `download_retry_interval`：默认最多尝试 3 次、每次间隔 3 秒；已下载图片会复用缓存
    - 登录态缓存 `login_ttl_minutes`：默认 10 分钟；过期后下一条需要登录的命令会自动重登
    - 分页每页条数 `per_page`：搜索、`jmlist`、`jmhis` 统一使用，默认 10 条，可改 5-20
@@ -66,7 +67,7 @@
    - 话页数后台预取 `page_prefetch_pages`：默认 2 页，范围 0-5；`jmv`/`jmlist` 当前页显示后，后台继续预取之后 N 页的话页数，`0` 关闭
    - 详情封面 `send_cover`：默认开启；关闭后 `/jmv` 不再发送封面，单次仍可用 `-pic` 临时关闭
    - 代理 `use_proxy` / `proxy_url`：默认关闭直连；开启后填写 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`
-   - 下载历史保留条数 `history_max`：默认 0，填 `0` 表示保留所有历史
+   - 下载历史保留条数 `history_max`：默认 200，填 `0` 表示保留所有历史
    - 自定义敏感词 `custom_sensitive`：每行 `原文=替换拼音`，长词优先匹配；默认留空，留空时只保留内置的 `X交`/`X乳` 规则；填写的词会在内置规则之外追加
 
 > 配置页使用“短标题 + 下方详细说明”的布局，数值项可以直接拖滑杆；说明文字不会再挤在标题里被截断。
@@ -84,10 +85,10 @@
 
 | 类型 | 优势 | 限制 |
 |---|---|---|
-| **api**（推荐） | 收藏添加/删除、评论翻页、每日签到、域名自动更新 | 不支持分类筛选 category |
-| **html** | 支持分类筛选 category/sub_category | 收藏添加报错、评论最多10条不翻页、总数解析不出 |
+| **api**（推荐） | 收藏添加/删除、评论翻页、每日签到、域名自动更新 | 插件未提供分类浏览命令（未接入 `categories_filter`） |
+| **html**（备选） | 部分页面解析更稳，可在 API 域名不可用时作为备选 | 收藏添加报错、评论最多 10 条不翻页、总数解析不出；同样没有分类浏览命令 |
 
-> 需要收藏/签到/评论翻页选 api；需要按分类浏览选 html。切换后需重启插件生效。
+> 需要收藏/签到/评论翻页选 api；html 只在 api 域名不可用或页面解析异常时作为备选。切换后需重启插件生效。
 
 ---
 

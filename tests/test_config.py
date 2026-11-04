@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,6 +31,37 @@ class ConfigTest(unittest.TestCase):
     def test_history_max_zero_keeps_unlimited(self):
         settings = PluginSettings.from_config({"history_max": 0}, ROOT)
         self.assertEqual(settings.history_max, 0)
+
+    def test_storage_dir_overrides_download_and_zip_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = PluginSettings.from_config({"storage_dir": tmp}, ROOT)
+
+            self.assertEqual(settings.download_base_dir, Path(tmp) / "downloads")
+            self.assertEqual(settings.zip_base_dir, Path(tmp) / "zips")
+            # 状态文件仍留在默认 plugin_data 目录
+            self.assertEqual(settings.history_file, settings.data_dir / "history.json")
+
+    def test_default_storage_dir_uses_plugin_data(self):
+        settings = PluginSettings.from_config({}, ROOT)
+
+        self.assertEqual(settings.download_base_dir.name, "downloads")
+        self.assertEqual(settings.download_base_dir.parent.name, "astrbot_plugin_jmcomic")
+
+    def test_prepare_directories_with_custom_storage_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_dir = Path(tmp) / "data" / "plugins" / "astrbot_plugin_jmcomic"
+            plugin_dir.mkdir(parents=True)
+            settings = PluginSettings.from_config(
+                {"storage_dir": str(Path(tmp) / "JMStorage")}, plugin_dir
+            )
+
+            settings.prepare_directories()
+
+            self.assertTrue(settings.download_base_dir.is_dir())
+            self.assertTrue(settings.zip_base_dir.is_dir())
+            # storage_dir 生效时也不能漏建默认状态目录
+            self.assertTrue(settings.history_file.is_file())
+            self.assertTrue(settings.subscription_file.is_file())
 
     def test_refresh_option_rebuilds_on_frozen_dataclass(self):
         """真实 PluginSettings 必须能重建 option（旧代码抛 FrozenInstanceError）。"""

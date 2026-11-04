@@ -246,8 +246,18 @@ class PluginSettings:
         # 插件目录: .../data/plugins/astrbot_plugin_jmcomic/
         # 往上两级到 data/，再进 plugin_data/astrbot_plugin_jmcomic/
         data_dir = plugin_dir.parent.parent / "plugin_data" / "astrbot_plugin_jmcomic"
-        download_base_dir = data_dir / "downloads"
-        zip_base_dir = data_dir / "zips"
+        # storage_dir 只覆盖下载图片与 ZIP 的输出根目录；history/subscriptions
+        # 等状态文件仍留在 data_dir，避免用户换盘后状态文件跟着丢。
+        storage_dir_raw = str(config.get("storage_dir", "") or "").strip()
+        if storage_dir_raw:
+            storage_root = Path(storage_dir_raw).expanduser()
+            if not storage_root.is_absolute():
+                # 相对路径按默认 plugin_data 目录解析，不依赖进程 cwd
+                storage_root = (data_dir / storage_root).resolve()
+        else:
+            storage_root = data_dir
+        download_base_dir = storage_root / "downloads"
+        zip_base_dir = storage_root / "zips"
 
         username = config.get("username", "")
         password = config.get("password", "")
@@ -412,6 +422,7 @@ class PluginSettings:
 
     def prepare_directories(self) -> None:
         """创建数据目录、清理过期缓存、初始化状态文件。"""
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.download_base_dir.mkdir(parents=True, exist_ok=True)
         self.zip_base_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_expired_cache()
