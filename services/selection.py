@@ -295,6 +295,25 @@ class SelectionService:
         return selected, invalid, notes
 
     # ========== 页段展开 / 分册 ==========
+    @staticmethod
+    def photo_page_total(photo, cached_total):
+        """章节真实总页数：优先服务端 page_arr / page_count，未知时用缓存页数。
+
+        页段下载只缓存 1..N 的前缀，若用缓存页数当 total，`end < total` 永远
+        不成立，文件名就不会带 `_p001-010` 后缀（BUG-030 遗留）。
+        """
+        page_arr = getattr(photo, "page_arr", None)
+        try:
+            if page_arr:
+                return len(page_arr)
+        except TypeError:
+            pass
+        try:
+            count = int(getattr(photo, "page_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        return count if count > 0 else cached_total
+
     def expand_page_units(self, selected, album_dir, page_limit):
         """把选中章节展开成页段。
 
@@ -302,14 +321,19 @@ class SelectionService:
         """
         units = []
         for index, photo, page_range in selected:
-            total = len(self.cache.chapter_image_paths(photo, album_dir))
-            if total <= 0:
+            cached_total = len(self.cache.chapter_image_paths(photo, album_dir))
+            if cached_total <= 0:
                 units.append(PageUnit(index, photo, 1, 0, 0))
                 continue
-            start, end = 1, total
+            total = self.photo_page_total(photo, cached_total)
+            start, end = 1, cached_total
             if page_range:
-                start = max(1, min(int(page_range[0]), total))
-                end = total if page_range[1] is None else min(int(page_range[1]), total)
+                start = max(1, min(int(page_range[0]), cached_total))
+                end = (
+                    cached_total
+                    if page_range[1] is None
+                    else min(int(page_range[1]), cached_total)
+                )
                 if end < start:
                     start, end = end, start
             if page_limit and page_limit > 0:

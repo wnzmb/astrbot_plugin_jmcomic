@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
@@ -104,6 +105,57 @@ class SelectionTest(unittest.TestCase):
         groups = self.service.pack_units(units, max_units=2)
         self.assertEqual([[u.index for u in group] for group in groups], [[1, 2], [3]])
 
+class FakeChapterCache:
+    """只提供 chapter_image_paths 的最小缓存替身。"""
+
+    def __init__(self, count):
+        self.count = count
+
+    def chapter_image_paths(self, photo, album_dir=None):
+        return [f"{index:05}.jpg" for index in range(1, self.count + 1)]
+
+
+class PageUnitTotalTest(unittest.TestCase):
+    def test_page_range_total_uses_server_page_count(self):
+        """页段下载只缓存前缀时，total 仍用服务端总页数，保证文件名带 _p 后缀。"""
+        service = SelectionService(
+            SimpleNamespace(pdf_page_limit=100), FakeChapterCache(10), None
+        )
+        photo = SimpleNamespace(
+            photo_id="1",
+            page_arr=[f"{i:05}.webp" for i in range(1390)],
+            page_count=1390,
+        )
+
+        units = service.expand_page_units([(1, photo, (1, 10))], None, 100)
+
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0].total, 1390)
+        self.assertTrue(units[0].partial)
+
+    def test_whole_short_chapter_is_not_partial(self):
+        service = SelectionService(
+            SimpleNamespace(pdf_page_limit=100), FakeChapterCache(10), None
+        )
+        photo = SimpleNamespace(
+            photo_id="1", page_arr=[f"{i:05}.webp" for i in range(10)], page_count=10
+        )
+
+        units = service.expand_page_units([(1, photo, (1, 10))], None, 100)
+
+        self.assertEqual(units[0].total, 10)
+        self.assertFalse(units[0].partial)
+
+    def test_total_falls_back_to_cached_count(self):
+        service = SelectionService(
+            SimpleNamespace(pdf_page_limit=100), FakeChapterCache(10), None
+        )
+        photo = SimpleNamespace(photo_id="1", page_arr=None, page_count=0)
+
+        units = service.expand_page_units([(1, photo, None)], None, 100)
+
+        self.assertEqual(units[0].total, 10)
+        self.assertFalse(units[0].partial)
 
 if __name__ == "__main__":
     unittest.main()

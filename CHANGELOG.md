@@ -1,5 +1,15 @@
 # 更新日志
 
+## v0.7.18 - 2026-11-04
+
+### 🐛 修复
+- 修复页段下载的 PDF 命名：`/jm 43164 -c 1:1-10` 之前生成 `JM43164_P001.pdf`，页段范围没体现在文件名里。根因是 `PageUnit.total` 取自「缓存图片数」，页段限流只缓存 1..10，导致 `partial = end < total` 恒为假
+- 新增 `SelectionService.photo_page_total()`：优先用服务端 `page_arr` / `page_count` 作为总页数，未知时才退回缓存页数；`expand_page_units()` 的 `total` 改用它，`start/end` 仍按缓存页数夹取避免越界
+- 效果：页段请求生成 `JM43164_P001_p001-010.pdf`；整话请求仍为 `JM43164_P001.pdf`；ZIP 内目录名同步带 `_p` 后缀
+
+### 🧪 测试
+- `tests/test_selection.py` 新增 `PageUnitTotalTest` 3 项（服务端页数、整话不误标、回退缓存页数）；全量 84 项通过
+
 ## v0.7.17 - 2026-11-04
 
 ### 🐛 修复
