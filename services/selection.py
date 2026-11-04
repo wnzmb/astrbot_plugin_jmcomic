@@ -314,6 +314,18 @@ class SelectionService:
             count = 0
         return count if count > 0 else cached_total
 
+    @staticmethod
+    def clamp_unit_to_images(unit, image_count):
+        """按实际图片数夹取页段，但保留服务端总页数用于页段命名。
+
+        前缀下载后实际图片可能只有 1..N 张，如果把 total 改成 N，
+        `partial = end < total` 就不成立，文件名会丢掉 `_p001-010` 后缀。
+        """
+        count = max(0, int(image_count))
+        start = max(1, min(unit.start, count)) if count else unit.start
+        end = min(unit.end, count) if count else unit.end
+        return unit._replace(start=start, end=end, total=max(unit.total, count))
+
     def expand_page_units(self, selected, album_dir, page_limit):
         """把选中章节展开成页段。
 

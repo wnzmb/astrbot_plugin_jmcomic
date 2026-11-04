@@ -157,5 +157,25 @@ class PageUnitTotalTest(unittest.TestCase):
         self.assertEqual(units[0].total, 10)
         self.assertFalse(units[0].partial)
 
+    def test_clamp_keeps_server_total_for_suffix(self):
+        """下载后按实际图片夹取时不能把 total 改小，否则文件名丢 _p 后缀。"""
+        photo = SimpleNamespace(photo_id="1")
+        unit = PageUnit(1, photo, 1, 10, 1390)
+
+        clamped = SelectionService.clamp_unit_to_images(unit, 10)
+
+        self.assertEqual((clamped.start, clamped.end), (1, 10))
+        self.assertEqual(clamped.total, 1390)
+        self.assertTrue(clamped.partial)
+
+    def test_clamp_without_server_total(self):
+        photo = SimpleNamespace(photo_id="1")
+        unit = PageUnit(1, photo, 1, 10, 10)
+
+        clamped = SelectionService.clamp_unit_to_images(unit, 10)
+
+        self.assertEqual(clamped.total, 10)
+        self.assertFalse(clamped.partial)
+
 if __name__ == "__main__":
     unittest.main()

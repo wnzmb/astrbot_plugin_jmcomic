@@ -369,7 +369,7 @@ class DownloadRunner:
                     if end < start:
                         target_failed += 1
                         continue
-                    unit = unit._replace(start=start, end=end, total=len(images))
+                    unit = self.selection.clamp_unit_to_images(unit, len(images))
                     chapter_entries.append((unit, folder, images[start - 1:end]))
 
                 if not chapter_entries:

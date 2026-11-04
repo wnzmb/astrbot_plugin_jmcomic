@@ -1,5 +1,15 @@
 # 更新日志
 
+## v0.7.19 - 2026-11-04
+
+### 🐛 修复
+- 页段文件名第二次修复：v0.7.18 让 `PageUnit.total` 使用服务端总页数，但打包前 `download_runner` 仍按实际图片数执行 `unit._replace(..., total=len(images))`，把 10 又改回缓存页数，`partial` 再次为假，文件名依旧缺少 `_p001-010`
+- 新增 `SelectionService.clamp_unit_to_images()`：夹取 `start/end` 时保留 `total = max(unit.total, len(images))`，`download_runner` 改用它
+- 实测组合 `plan_pdf_groups → clamp_unit_to_images → file_stem_for_entries` 输出 `JM43164_P001_p001-010`
+
+### 🧪 测试
+- `PageUnitTotalTest` 扩到 5 项（新增夹取保留 total、无服务端页数场景）；全量 86 项通过
+
 ## v0.7.18 - 2026-11-04
 
 ### 🐛 修复
