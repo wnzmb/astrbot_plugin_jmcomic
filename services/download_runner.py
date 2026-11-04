@@ -173,6 +173,21 @@ class DownloadRunner:
                 except Exception as e:
                     logger.warning(f"补齐选中话页数失败，进度可能不完整: {e}")
 
+            # 页段请求只需要前 N 页：限制单章下载页数，避免整话拉取（BUG-030）。
+            # 同一章有多个页段时取最大结束页；有整话请求时不限制。
+            download_max_pages = {}
+            unlimited_page_photos = set()
+            for _index, _photo, page_range in selected:
+                _photo_key = str(getattr(_photo, "photo_id", _index))
+                if page_range is None or page_range[1] is None:
+                    unlimited_page_photos.add(_photo_key)
+                else:
+                    download_max_pages[_photo_key] = max(
+                        download_max_pages.get(_photo_key, 0), int(page_range[1])
+                    )
+            for _photo_key in unlimited_page_photos:
+                download_max_pages.pop(_photo_key, None)
+
             selected_total = sum(
                 self.catalog.photo_range_pages(photo, page_range)
                 for _index, photo, page_range in selected
@@ -241,13 +256,18 @@ class DownloadRunner:
                 done_pages = 0
                 for original_index, photo in download_items:
                     photo_key = str(getattr(photo, "photo_id", original_index))
+                    max_page = download_max_pages.get(photo_key)
                     folder = self.cache.chapter_dir(photo, album_dir)
-                    if folder is not None and await self.download.is_photo_complete(photo, folder):
+                    if folder is not None and await self.download.is_photo_complete(
+                        photo, folder, max_page=max_page
+                    ):
                         done_pages += selected_pages.get(photo_key, 0)
                         self.progress.update(user_id, done=done_pages)
                         continue
                     try:
-                        await self.download.ensure_photo_downloaded(photo, album_dir)
+                        await self.download.ensure_photo_downloaded(
+                            photo, album_dir, max_page=max_page
+                        )
                     except Exception as e:
                         yield self.messaging.plain(event,
                             f"❌ 第{original_index}话下载失败：{e}"
@@ -330,7 +350,9 @@ class DownloadRunner:
                     folder = self.cache.chapter_dir(unit.photo, album_dir)
                     if folder is None:
                         try:
-                            folder = await self.download.ensure_photo_downloaded(unit.photo, album_dir)
+                            folder = await self.download.ensure_photo_downloaded(
+                                unit.photo, album_dir, max_page=unit.end
+                            )
                         except Exception as e:
                             logger.warning(f"第{unit.index}话补下载失败: {e}")
                             folder = None

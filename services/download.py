@@ -5,7 +5,7 @@ import asyncio
 from astrbot.api import logger
 
 from ..core import jmcompat
-from ..core.downloader import ProgressDownloader
+from ..core.downloader import ProgressDownloader, page_limit
 
 
 class DownloadService:
@@ -130,11 +130,12 @@ class DownloadService:
             return
 
     # ========== 单章下载 ==========
-    async def is_photo_complete(self, photo, folder):
+    async def is_photo_complete(self, photo, folder, max_page=None):
         """章节缓存是否完整。
 
         album 列表里的 photo 通常没有 page_arr，只有拉过详情才知道总页数；
         因此缓存目录已存在时补一次详情请求，避免把 5/38 页的半成品当成完整缓存。
+        max_page 用于页段下载：此时只缓存了 1..N 的连续前缀，按 N 判定完整。
         """
         if folder is None:
             return False
@@ -170,12 +171,18 @@ class DownloadService:
                 expected = 0
         if expected <= 0:
             return True
-        return self.cache.chapter_complete(photo, folder=folder)
+        return self.cache.chapter_complete(photo, folder=folder, max_page=max_page)
 
-    async def ensure_photo_downloaded(self, photo, album_dir=None):
-        """确保单章已下载且页数完整，返回章节目录。"""
+    async def ensure_photo_downloaded(self, photo, album_dir=None, max_page=None):
+        """确保单章已下载且页数完整，返回章节目录。
+
+        max_page 不为空时只下载 1..max_page 的连续前缀（页段请求），避免整话
+        下载；后续请求更大页码时会复用已有图片并补齐差额。
+        """
         folder = self.cache.chapter_dir(photo, album_dir)
-        if folder is not None and await self.is_photo_complete(photo, folder):
+        if folder is not None and await self.is_photo_complete(
+            photo, folder, max_page=max_page
+        ):
             return folder
 
         attempts = self._retry_attempts()
@@ -190,9 +197,10 @@ class DownloadService:
             cancelled_exc = jmcompat.exceptions("DownloadCancelledException")
             control = jm.DownloadControl()
             try:
-                result = await jm.download_photo_async(
-                    photo.photo_id, self.client.current_option(), control=control
-                )
+                with page_limit(max_page):
+                    result = await jm.download_photo_async(
+                        photo.photo_id, self.client.current_option(), control=control
+                    )
                 break
             except asyncio.CancelledError:
                 # 单章下载直接 await，取消时同样要通知库侧停止线程内下载

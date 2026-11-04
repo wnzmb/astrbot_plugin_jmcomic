@@ -1,5 +1,19 @@
 # 更新日志
 
+## v0.7.16 - 2026-11-04
+
+### 🐛 修复
+- 修复 BUG-030：`/jm 43164 -c 1:1-50` 等页段请求会拉整话（1390 页）且 `/jmnow` 长时间显示 0/N。新增 `page_limit`（ContextVar）与 `before_image` 跳过逻辑，只下载 1..N 的连续前缀；`ensure_photo_downloaded`/`is_photo_complete` 支持 `max_page`，缓存完整性按上限判定；`download_runner` 按选中页段计算每章最大页（多页段取最大结束页，整话不限）。实测 1390 页章节限制 3 页时只落盘 `00001~00003`
+- 修复 BUG-031：`/jmclean` 把历史上写过的目录永久当成活动目录，导致下载过的本子永远被跳过。`_active_album_ids()` 改为只读 `state.active_downloads`（正在下载/打包的任务），`_album_dirs` 仅用于定位缓存目录
+
+### 📝 文档
+- `docs/版本与缺陷记录.md`：BUG-030/031 补齐核查结论、修复与验证；新增 §十九
+- `docs/测试流程.md`：新增 R21（页段限流、补页、jmclean 活动目录）
+- 「上游耦合清单」第 1 条补充 `before_image` 钩子与 `image.skip` 依赖
+
+### 🧪 测试
+- `tests/test_download.py` 新增前缀完整性判定与 `_should_skip_image` 边界；`tests/test_maintenance.py` 新增活动目录判定 2 项；全量 80 项通过
+
 ## v0.7.15 - 2026-11-04
 
 ### 🔧 变更

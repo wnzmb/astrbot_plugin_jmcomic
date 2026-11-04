@@ -1,10 +1,50 @@
 """jmcomic 异步下载器适配：带进度跟踪的 ProgressDownloader。"""
 
+from contextvars import ContextVar
 from pathlib import Path
 
 from astrbot.api import logger
 
 from . import jmcompat
+
+
+# 单章下载页数上限：设置后只下载 1..N 页，保证缓存仍是连续前缀。
+# 页段请求（-c 5:201-400）只需要前 400 页，没必要拉整话（BUG-030）。
+_PAGE_LIMIT: ContextVar = ContextVar("jmcomic_page_limit", default=None)
+
+
+def _should_skip_image(image, limit):
+    """判断图片是否超出当前页数上限；无法判断页码时不跳过。"""
+    if not limit:
+        return False
+    try:
+        index = int(getattr(image, "index", -1))
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return False
+    return index > limit
+
+
+class page_limit:
+    """临时限制单章下载页数。
+
+    只下载前 N 页而不是「第 start-end 页」，是为了让缓存始终是 1..N 的连续
+    前缀：图片名 00001..0000N 与页码一一对应，打包时按 `start-1:end` 取片
+    不会错位。同一章后续请求更大的页码时，jmcomic 会复用已有图片、只补差额。
+    """
+
+    def __init__(self, max_page):
+        self.max_page = max_page
+        self._token = None
+
+    def __enter__(self):
+        self._token = _PAGE_LIMIT.set(self.max_page)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _PAGE_LIMIT.reset(self._token)
+        return False
+
 
 
 # 库内置 advanced_retry 的请求级域名轮询配置：
@@ -82,6 +122,12 @@ class _ProgressHooks:
                 state['total'] += len(getattr(photo, 'page_arr', None) or [])
         except Exception:
             pass
+
+    async def before_image(self, image, img_save_path):
+        # 页段请求只下载前缀页，超出上限的图片直接跳过（不产生网络请求）
+        if _should_skip_image(image, _PAGE_LIMIT.get()):
+            image.skip = True
+        await self._super_hook("before_image", image, img_save_path)
 
     async def after_image(self, image, img_save_path):
         await self._super_hook("after_image", image, img_save_path)

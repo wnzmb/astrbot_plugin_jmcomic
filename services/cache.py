@@ -291,7 +291,7 @@ class CacheService:
                 pass
         return None
 
-    def chapter_complete(self, photo, folder=None, album_dir=None):
+    def chapter_complete(self, photo, folder=None, album_dir=None, max_page=None):
         """章节目录是否存在且页数足够；页数未知时用图片编号连续性兜底。"""
         folder = folder or self.chapter_dir(photo, album_dir)
         if folder is None:
@@ -327,6 +327,14 @@ class CacheService:
                 expected = int(self.read_metadata(folder).get("page_count") or 0)
             except (TypeError, ValueError):
                 expected = 0
+        # 页段下载只缓存 1..N 的连续前缀，按请求上限判定完整性
+        if max_page:
+            try:
+                limit = int(max_page)
+            except (TypeError, ValueError):
+                limit = 0
+            if limit > 0 and expected > limit:
+                expected = limit
         return actual >= expected if expected > 0 else True
 
     @staticmethod

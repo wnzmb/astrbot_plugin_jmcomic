@@ -5,8 +5,6 @@ import time
 
 from astrbot.api.event import AstrMessageEvent
 
-from ..core.downloader import ProgressDownloader
-
 
 class MaintenanceHandler:
     def __init__(self, settings, access, maintenance, state, messaging):
@@ -20,7 +18,13 @@ class MaintenanceHandler:
         return self.access.is_admin(event) or self.access.is_owner(event)
 
     def _active_album_ids(self):
-        active = set(ProgressDownloader._album_dirs.keys())
+        """只返回「正在下载」的 album_id。
+
+        `ProgressDownloader._album_dirs` 记录的是历史上写过的目录，下载结束后
+        不会清理，不能作为活动任务判断依据，否则历史目录会被 /jmclean 永久跳过
+        （BUG-031）。
+        """
+        active = set()
         for info in self.state.active_downloads.values():
             if not isinstance(info, dict):
                 continue

@@ -62,6 +62,37 @@ class MaintenanceTest(unittest.TestCase):
             self.assertEqual(preview["files"], 0)
             self.assertEqual(preview["skipped_active"], ["JM1"])
 
+class MaintenanceHandlerActiveTest(unittest.TestCase):
+    def test_album_dirs_history_is_not_active(self):
+        """BUG-031：历史下载目录不能算活动任务，否则 /jmclean 永远跳过。"""
+        from astrbot_plugin_jmcomic.core.downloader import ProgressDownloader
+        from astrbot_plugin_jmcomic.core.state import PluginState
+        from astrbot_plugin_jmcomic.handlers.maintenance import MaintenanceHandler
+
+        state = PluginState()
+        state.active_downloads["u1"] = {"album_id": "43164"}
+        ProgressDownloader._album_dirs["1228973"] = "C:/tmp/JM1228973"
+        try:
+            handler = MaintenanceHandler(None, None, None, state, None)
+            active = handler._active_album_ids()
+        finally:
+            ProgressDownloader._album_dirs.pop("1228973", None)
+
+        self.assertIn("43164", active)
+        self.assertNotIn("1228973", active)
+
+    def test_no_active_downloads_returns_empty(self):
+        from astrbot_plugin_jmcomic.core.downloader import ProgressDownloader
+        from astrbot_plugin_jmcomic.core.state import PluginState
+        from astrbot_plugin_jmcomic.handlers.maintenance import MaintenanceHandler
+
+        state = PluginState()
+        ProgressDownloader._album_dirs["999"] = "C:/tmp/JM999"
+        try:
+            handler = MaintenanceHandler(None, None, None, state, None)
+            self.assertEqual(handler._active_album_ids(), set())
+        finally:
+            ProgressDownloader._album_dirs.pop("999", None)
 
 if __name__ == "__main__":
     unittest.main()
