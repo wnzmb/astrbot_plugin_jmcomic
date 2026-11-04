@@ -25,6 +25,21 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(settings.send_interval, 5.0)
         self.assertEqual(settings.pdf_page_limit, 100)
         self.assertEqual(settings.zip_page_limit, 200)
+        self.assertEqual(settings.history_max, 200)
+
+    def test_history_max_zero_keeps_unlimited(self):
+        settings = PluginSettings.from_config({"history_max": 0}, ROOT)
+        self.assertEqual(settings.history_max, 0)
+
+    def test_refresh_option_rebuilds_on_frozen_dataclass(self):
+        """真实 PluginSettings 必须能重建 option（旧代码抛 FrozenInstanceError）。"""
+        settings = PluginSettings.from_config({}, ROOT)
+        old_option = settings.option
+
+        new_option = settings.refresh_option()
+
+        self.assertIs(settings.option, new_option)
+        self.assertIsNot(old_option, new_option)
 
     def test_page_limits_are_clamped_to_500(self):
         settings = PluginSettings.from_config(

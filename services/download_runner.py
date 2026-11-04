@@ -453,7 +453,7 @@ class DownloadRunner:
                 await asyncio.sleep(self.settings.send_interval)
 
             if target_sent:
-                total_count = self.history.add_user(event.get_sender_id(), {
+                total_count = await self.history.add_user_async(event.get_sender_id(), {
                     "id": target_id,
                     "title": target_title,
                     "time": time.strftime("%Y-%m-%d %H:%M"),

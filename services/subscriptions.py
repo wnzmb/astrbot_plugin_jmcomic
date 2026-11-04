@@ -9,6 +9,9 @@ from astrbot.api import logger
 from astrbot.api.event import MessageChain
 import astrbot.api.message_components as Comp
 
+# 订阅检查失败后的退避上限：即使一直失败，也每天最多试一次
+FAIL_BACKOFF_CAP_SECONDS = 24 * 60 * 60
+
 
 class SubscriptionService:
     def __init__(self, settings, client, text, catalog, state, context):
@@ -62,7 +65,11 @@ class SubscriptionService:
         }
 
     async def check_once(self):
-        """检查所有会话的订阅，有新增章节时推送到对应会话。"""
+        """检查所有会话的订阅，有新增章节时推送到对应会话。
+
+        单本订阅连续失败时按 ``fails`` 指数退避（上限 24 小时），避免失效
+        ID 每个周期都发请求、刷 warning；成功取到详情后自动清零。
+        """
         data = self.load()
         if not data:
             return
@@ -81,9 +88,21 @@ class SubscriptionService:
                     if not isinstance(info, dict):
                         continue
                     try:
+                        next_check_at = float(info.get("next_check_at", 0) or 0)
+                    except (TypeError, ValueError):
+                        next_check_at = 0.0
+                    if time.time() < next_check_at:
+                        # 还在退避窗口内，不发请求、不写日志
+                        continue
+                    try:
                         album = await asyncio.to_thread(
                             client.get_album_detail, album_id
                         )
+                        # 成功拿到详情即视为恢复，清掉失败退避状态
+                        if info.pop("fails", None) is not None:
+                            changed = True
+                        if info.pop("next_check_at", None) is not None:
+                            changed = True
                         old_ids = {str(x) for x in (info.get("photo_ids") or [])}
                         photos = list(album)
                         new_photos = [
@@ -125,7 +144,28 @@ class SubscriptionService:
                         info["updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
                         changed = True
                     except Exception as e:
-                        logger.warning(f"检查订阅 JM{album_id} 失败: {e}")
+                        try:
+                            fails = int(info.get("fails", 0) or 0) + 1
+                        except (TypeError, ValueError):
+                            fails = 1
+                        info["fails"] = fails
+                        interval = max(
+                            60,
+                            int(
+                                getattr(self.settings, "subscribe_interval", 3600)
+                                or 3600
+                            ),
+                        )
+                        delay = min(
+                            FAIL_BACKOFF_CAP_SECONDS,
+                            interval * (2 ** min(fails, 4)),
+                        )
+                        info["next_check_at"] = time.time() + delay
+                        changed = True
+                        logger.warning(
+                            f"检查订阅 JM{album_id} 失败（连续 {fails} 次，"
+                            f"{delay} 秒后重试）: {e}"
+                        )
                     # 每本之间稍作间隔，避免集中请求触发限流
                     await asyncio.sleep(2)
             if changed:

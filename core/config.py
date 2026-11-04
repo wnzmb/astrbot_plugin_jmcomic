@@ -355,7 +355,7 @@ class PluginSettings:
             tease_enabled=config.get("tease_enabled", False),
             cache_days=int(config.get("cache_days", 7)),
             comment_count=int(config.get("comment_count", 10)),
-            history_max=max(0, int(config.get("history_max", 0) or 0)),
+            history_max=max(0, int(config.get("history_max", 200) or 0)),
             dual_search=config.get("dual_search", True),
             # 号主与文件发送限额（方案B：账号类命令只允许号主）
             owner_ids=_split_set(config.get("owner_ids", "")),
@@ -388,8 +388,13 @@ class PluginSettings:
 
         AstrBot 桌面版重载插件依赖后，旧的 option 绑定的是旧“代”的
         jmcomic 类，继续使用会出现跨代类不匹配（BUG-027），因此需要重建。
+
+        PluginSettings 是 frozen dataclass，直接 ``self.option = ...`` 会抛
+        FrozenInstanceError（且被 client 的 try/except 吞掉，导致 option
+        实际从未重建）。这里只对运行期依赖句柄做一次定向写入，其余字段
+        仍保持只读。
         """
-        self.option = _build_option(
+        option = _build_option(
             client_type=self.client_type,
             custom_domains=self.custom_domains,
             username=self.username,
@@ -402,7 +407,8 @@ class PluginSettings:
             client_retry_times=self.client_retry_times,
             download_base_dir=self.download_base_dir,
         )
-        return self.option
+        object.__setattr__(self, "option", option)
+        return option
 
     def prepare_directories(self) -> None:
         """创建数据目录、清理过期缓存、初始化状态文件。"""

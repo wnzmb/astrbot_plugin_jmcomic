@@ -1,5 +1,16 @@
 # 更新日志
 
+## v0.7.20 - 2026-11-04
+
+### 🐛 修复（审计复核后的 P1 项，详见 `docs/对抗性审计.md`）
+- **refresh_option 必然失败**：`PluginSettings` 是 `frozen=True` dataclass，`self.option = ...` 会抛 `FrozenInstanceError`，并被 `core/client.py` 的 try/except 吞掉，导致 jmcomic 换代后 option 实际从未重建。改用 `object.__setattr__` 定向写入，保留其余字段只读
+- **history 全量同步读写**：`load` / `save` / `get_user` / `add_user` 增加 `asyncio.to_thread` 包装，`/jmhis` 与下载收尾不再阻塞事件循环；`history_max` 默认从 0（不限）改为 200，避免默认安装下文件无限增长（0 仍表示保留全部）
+- **订阅失败无退避**：订阅记录增加 `fails` / `next_check_at`，失败按 `interval × 2^min(fails,4)` 退避、上限 24 小时；成功取到详情后自动清零，避免失效 ID 每周期刷请求和 warning
+
+### 🧪 测试
+- 新增 `tests/test_history.py` 3 项、`tests/test_subscriptions.py` 3 项；`tests/test_config.py` 增加真实 `PluginSettings.refresh_option()` 与 `history_max` 默认值断言
+- 全量 94 项 unittest 通过（jmcomic 2.7.10 / 2.7.11 各跑一遍），`ruff check .` / `compileall` 通过
+
 ## v0.7.19 - 2026-11-04
 
 ### 🐛 修复

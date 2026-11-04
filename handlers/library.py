@@ -113,10 +113,10 @@ class LibraryHandler:
         user_id = event.get_sender_id()
 
         if len(args) >= 2 and args[1].lower() == "clear":
-            data = self.history_service.load()
+            data = await self.history_service.load_async()
             if user_id in data:
                 del data[user_id]
-            self.history_service.save(data)
+            await self.history_service.save_async(data)
             yield self.messaging.plain(event, "🧹 你的下载历史已清空")
             return
 
@@ -141,7 +141,7 @@ class LibraryHandler:
             if not self.access.is_admin(event):
                 yield self.messaging.plain(event, "⚠️ 只有管理员可以使用 /jmhis -all")
                 return
-            data = self.history_service.load()
+            data = await self.history_service.load_async()
             if not data:
                 yield self.messaging.plain(event, "还没有任何下载记录")
                 return
@@ -206,7 +206,7 @@ class LibraryHandler:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmhis [页码]")
             return
 
-        history = self.history_service.get_user(user_id)
+        history = await self.history_service.get_user_async(user_id)
         if not history:
             yield self.messaging.plain(event, "还没有下载记录")
             return

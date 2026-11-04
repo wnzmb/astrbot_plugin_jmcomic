@@ -1,5 +1,6 @@
 """下载历史：history.json 读写与按用户裁剪。"""
 
+import asyncio
 import json
 import os
 import threading
@@ -47,3 +48,18 @@ class HistoryService:
                 data[user_id] = data[user_id][:self.settings.history_max]
             self.save(data)
             return len(data[user_id])
+
+    # ========== asyncio 包装 ==========
+    # history.json 可能随着用户数增长到几 MB，全量读写不能跑在事件循环里。
+    # RLock 在转线程后仍然需要，用于串行化并发写。
+    async def load_async(self):
+        return await asyncio.to_thread(self.load)
+
+    async def save_async(self, data):
+        await asyncio.to_thread(self.save, data)
+
+    async def get_user_async(self, user_id):
+        return await asyncio.to_thread(self.get_user, user_id)
+
+    async def add_user_async(self, user_id, item):
+        return await asyncio.to_thread(self.add_user, user_id, item)
