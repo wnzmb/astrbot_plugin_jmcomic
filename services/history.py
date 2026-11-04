@@ -49,6 +49,20 @@ class HistoryService:
             self.save(data)
             return len(data[user_id])
 
+    def clear_user(self, user_id):
+        """删除某用户的历史。
+
+        load + del + save 必须在同一把锁内完成，否则可能与 ``add_user``
+        并发时把刚写入的一条历史覆盖掉。
+        """
+        with self._lock:
+            data = self.load()
+            if user_id not in data:
+                return False
+            del data[user_id]
+            self.save(data)
+            return True
+
     # ========== asyncio 包装 ==========
     # history.json 可能随着用户数增长到几 MB，全量读写不能跑在事件循环里。
     # RLock 在转线程后仍然需要，用于串行化并发写。
@@ -63,3 +77,6 @@ class HistoryService:
 
     async def add_user_async(self, user_id, item):
         return await asyncio.to_thread(self.add_user, user_id, item)
+
+    async def clear_user_async(self, user_id):
+        return await asyncio.to_thread(self.clear_user, user_id)

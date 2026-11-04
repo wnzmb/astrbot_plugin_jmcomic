@@ -115,7 +115,7 @@ class FavoritesService:
     async def export(self, event, folder_id: str):
         """导出收藏夹为 CSV 文件（仅号主，无加密）。"""
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
             if not self.client.configured_username():
                 yield self.messaging.plain(event, "⚠️ 未配置登录账号，无法使用收藏夹功能")
                 return
@@ -144,7 +144,7 @@ class FavoritesService:
             await asyncio.to_thread(self.write_csv, output_path, rows)
 
             size_kb = max(1, math.ceil(output_path.stat().st_size / 1024))
-            self.quota.record_file_send()
+            await self.quota.record_file_send_async()
             yield self.messaging.chain(event, [
                 Comp.Plain(f"📎 {output_path.name} ({size_kb}KB，共{len(rows)}本)\n"),
                 Comp.File(file=str(output_path), name=output_path.name),

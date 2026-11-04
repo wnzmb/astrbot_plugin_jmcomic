@@ -150,8 +150,9 @@ class DownloadService:
                 expected = 0
         if expected <= 0:
             try:
+                client = await asyncio.to_thread(self.client.get_client)
                 detail = await asyncio.to_thread(
-                    self.client.get_client().get_photo_detail,
+                    client.get_photo_detail,
                     photo.photo_id,
                     fetch_album=False,
                     fetch_scramble_id=False,

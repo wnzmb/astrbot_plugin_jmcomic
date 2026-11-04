@@ -83,7 +83,7 @@ class AlbumHandler:
         yield self.messaging.plain(event, f"🔍 查询 JM{album_id} ...{option_suffix}")
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
             album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
 
             if self.catalog.looks_like_chapter_album(album):
@@ -272,7 +272,7 @@ class AlbumHandler:
         yield self.messaging.plain(event, f"📚 获取 JM{album_id} 的话列表...")
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
             album = await asyncio.to_thread(get_album_detail_compat, client, album_id)
 
             if self.catalog.looks_like_chapter_album(album):

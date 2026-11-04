@@ -1,5 +1,6 @@
 """jmcomic 客户端管理：登录态缓存与异常翻译。"""
 
+import asyncio
 import threading
 import time
 
@@ -98,6 +99,9 @@ class JmClientManager:
         签到、收藏夹、搜索等接口需要登录态；下载器则用 option 新建客户端，
         所以登录必须写回 option.auth（见 ``_login``），否则新客户端拿不到
         cookies 与 user_id。
+
+        注意：本方法可能执行同步登录网络请求，协程里请用
+        ``get_client_async()``，否则会阻塞事件循环。
         """
         # 优先返回仍在有效期内的已登录客户端
         with self._client_lock:
@@ -112,6 +116,10 @@ class JmClientManager:
                 self._cached_client = self.settings.option.new_jm_client()
             self._cached_client = self._login(self._cached_client)
             return self._cached_client
+
+    async def get_client_async(self):
+        """异步版 ``get_client()``：把可能包含登录网络请求的调用挪出事件循环。"""
+        return await asyncio.to_thread(self.get_client)
 
     def refresh_client(self):
         """登录态被服务端判定失效时，丢弃缓存并重新登录。"""

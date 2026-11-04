@@ -73,7 +73,7 @@ class DownloadRunner:
             return
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
         except Exception as e:
             yield self.messaging.plain(event, self.client.handle_exception(e, "登录"))
             return
@@ -329,7 +329,7 @@ class DownloadRunner:
                 target_title = album_title or target_id
 
             for group_index, group in enumerate(groups):
-                quota = self.quota.file_quota()
+                quota = await self.quota.file_quota_async()
                 if self.quota.quota_reached(quota):
                     message = self.quota.block_text(len(groups) - group_index)
                     remaining_expr = self.selection.resume_expr(groups[group_index:])
@@ -435,7 +435,7 @@ class DownloadRunner:
                     continue
 
                 size_mb = output_path.stat().st_size / 1024 / 1024
-                self.quota.record_file_send()
+                await self.quota.record_file_send_async()
                 total_files += 1
                 target_sent += 1
                 for unit, _folder, _images in chapter_entries:
@@ -472,10 +472,11 @@ class DownloadRunner:
 
         final_lines = []
         if not quota_stopped:
+            quota_status = await self.quota.status_text_async()
             final_lines.append(
                 f"📊 下载完成：成功 {success}/{len(targets)} 个目标，"
                 f"发送 {total_files} 个文件，总计 {total_bytes / 1024 / 1024:.1f}MB\n"
-                f"{self.quota.status_text()}"
+                f"{quota_status}"
             )
         if tease_text:
             final_lines.append(tease_text)

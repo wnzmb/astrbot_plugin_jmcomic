@@ -1,5 +1,6 @@
 """文件发送限额：读取/写入 send_limits.json，统计每日/每小时额度。"""
 
+import asyncio
 import json
 import os
 import threading
@@ -110,3 +111,15 @@ class FileQuotaService:
             f"今日文件 {self.quota_display(q['day_count'], self.settings.daily_file_limit)}，"
             f"最近1小时 {self.quota_display(q['hour_count'], self.settings.hourly_file_limit)}"
         )
+
+    # ========== asyncio 包装 ==========
+    # send_limits.json 虽小，但每发一个文件都会全量读写一次；批量发送时
+    # 同步 I/O 会叠加阻塞事件循环，统一挪到线程里。
+    async def file_quota_async(self):
+        return await asyncio.to_thread(self.file_quota)
+
+    async def record_file_send_async(self, count=1):
+        await asyncio.to_thread(self.record_file_send, count)
+
+    async def status_text_async(self):
+        return await asyncio.to_thread(self.status_text)

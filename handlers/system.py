@@ -157,7 +157,7 @@ class SystemHandler:
             return
         yield self.messaging.plain(event, "🌐 正在获取可用域名...")
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
             client_label = "API" if self.settings.client_type == "api" else "HTML"
 
             api_domains = []

@@ -32,7 +32,7 @@ class SearchHandler:
 
         try:
             import random
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
 
             if tag_name:
                 # 全站搜索，关键词可以是标题/标签/作者
@@ -117,7 +117,7 @@ class SearchHandler:
         except ValueError as e:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jms <关键词> [页码] [排序]")
             return
-        client = self.client.get_client()
+        client = await self.client.get_client_async()
 
         async for result in self.search.render_search_page(
             event, client, client.search_site, keyword, qq_page, order_by, "全站搜索", "jms"
@@ -139,7 +139,7 @@ class SearchHandler:
         except ValueError as e:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jma <作者名> [页码] [排序]")
             return
-        client = self.client.get_client()
+        client = await self.client.get_client_async()
 
         async for result in self.search.render_search_page(
             event, client, client.search_author, keyword, qq_page, order_by, "作者搜索", "jma"
@@ -161,7 +161,7 @@ class SearchHandler:
         except ValueError as e:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmt <标签名> [页码] [排序]")
             return
-        client = self.client.get_client()
+        client = await self.client.get_client_async()
         search_keyword = self.text.restore_tag(keyword)
 
         async for result in self.search.render_search_page(
@@ -185,7 +185,7 @@ class SearchHandler:
         except ValueError as e:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmr <角色名> [页码] [排序]")
             return
-        client = self.client.get_client()
+        client = await self.client.get_client_async()
 
         async for result in self.search.render_search_page(
             event, client, client.search_actor, keyword, qq_page, order_by, "角色搜索", "jmr"
@@ -207,7 +207,7 @@ class SearchHandler:
         except ValueError as e:
             yield self.messaging.plain(event, f"⚠️ {e}\n用法：/jmw <原作名> [页码] [排序]")
             return
-        client = self.client.get_client()
+        client = await self.client.get_client_async()
 
         async for result in self.search.render_search_page(
             event, client, client.search_work, keyword, qq_page, order_by, "原作搜索", "jmw"

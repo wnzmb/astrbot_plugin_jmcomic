@@ -110,7 +110,7 @@ class FavoritesHandler:
                 return
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
 
             # 登录用户名：优先 option.auth（2.7.11+），兼容旧版 login 插件配置
             username = self.client.configured_username()

@@ -24,7 +24,7 @@ class AccountHandler:
             yield self.messaging.plain(event, self.access.owner_required_text())
             return
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
 
             # jmcomic 2.7.5 及以下版本不支持签到接口
             jm_version = getattr(jmcomic, '__version__', '未知')
@@ -127,7 +127,7 @@ class AccountHandler:
             yield self.messaging.plain(event, self.access.owner_required_text())
             return
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
 
             # 登录用户名：优先 option.auth（2.7.11+），兼容旧版 login 插件配置
             username = self.client.configured_username()

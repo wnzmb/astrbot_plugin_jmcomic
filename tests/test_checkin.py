@@ -77,6 +77,9 @@ class FakeClientManager:
     def get_client(self):
         return self.client
 
+    async def get_client_async(self):
+        return self.client
+
     def is_auth_error(self, exc):
         return False
 
@@ -85,6 +88,9 @@ class FakeClientManager:
 
     def configured_username(self):
         return "100"
+
+    def handle_exception(self, exc, action="操作"):
+        return f"{action}失败：{exc}"
 
 
 class FakeMessaging:

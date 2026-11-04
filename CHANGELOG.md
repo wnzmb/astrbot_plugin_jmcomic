@@ -1,5 +1,15 @@
 # 更新日志
 
+## v0.7.21 - 2026-11-04
+
+### 🚀 优化
+- **登录不再阻塞事件循环**：`JmClientManager` 增加 `get_client_async()`，16 处直接在协程里调用的 `get_client()` 全部改为 `await ...`；并修复 `services/download.py` 里 `to_thread(self.client.get_client().get_photo_detail, ...)` 在进线程前就同步登录的求值顺序问题。登录 TTL 到期后，最坏 `request_timeout × client_retry_times` 的阻塞不再冻结整个 bot
+- **quota I/O 转线程**：`FileQuotaService` 增加 `file_quota_async` / `record_file_send_async` / `status_text_async`，下载收尾与收藏导出不再同步读写 `send_limits.json`
+- **`/jmhis clear` 原子化**：新增 `HistoryService.clear_user()` / `clear_user_async()`，load + del + save 在同一把 `RLock` 内完成，避免与 `add_user_async` 并发时丢失一条历史
+
+### 🧪 测试
+- 新增 `tests/test_client_async.py`，并补充 history 清理与 quota 异步包装用例；全量 98 项 unittest 通过（jmcomic 2.7.10 / 2.7.11 各跑一遍），`ruff` / `compileall` 通过
+
 ## v0.7.20 - 2026-11-04
 
 ### 🐛 修复（审计复核后的 P1 项，详见 `docs/对抗性审计.md`）

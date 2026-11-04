@@ -62,7 +62,7 @@ class LibraryHandler:
         yield self.messaging.plain(event, f"🏆 获取{rank_name} 第{qq_page}页...")
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
             method = getattr(client, method_name)
 
             PER_QQ_PAGE = self.settings.per_page
@@ -113,10 +113,7 @@ class LibraryHandler:
         user_id = event.get_sender_id()
 
         if len(args) >= 2 and args[1].lower() == "clear":
-            data = await self.history_service.load_async()
-            if user_id in data:
-                del data[user_id]
-            await self.history_service.save_async(data)
+            await self.history_service.clear_user_async(user_id)
             yield self.messaging.plain(event, "🧹 你的下载历史已清空")
             return
 
@@ -281,7 +278,7 @@ class LibraryHandler:
         yield self.messaging.plain(event, f"💬 获取 JM{album_id} 的评论（第{page_num}页）...")
 
         try:
-            client = self.client.get_client()
+            client = await self.client.get_client_async()
 
             # 先校验漫画是否存在，避免无效ID被上游当成“0页评论”
             album = await asyncio.to_thread(get_album_detail_compat, client, album_id)

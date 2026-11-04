@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,20 @@ class QuotaTest(unittest.TestCase):
             self.assertTrue(service.quota_reached(quota))
             self.assertEqual(service.limit_text(0), "不限")
             self.assertEqual(service.quota_display(1, 0), "1/不限")
+
+    def test_async_wrappers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = SimpleNamespace(
+                send_state_file=Path(tmp) / "send_limits.json",
+                daily_file_limit=0,
+                hourly_file_limit=0,
+            )
+            service = FileQuotaService(settings)
+
+            asyncio.run(service.record_file_send_async())
+            quota = asyncio.run(service.file_quota_async())
+            self.assertEqual(quota["day_count"], 1)
+            self.assertIn("今日文件", asyncio.run(service.status_text_async()))
 
 
 if __name__ == "__main__":

@@ -49,6 +49,26 @@ class HistoryServiceTest(unittest.TestCase):
             data = asyncio.run(service.load_async())
             self.assertIn("u2", data)
 
+    def test_clear_user_only_removes_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp, 10)
+            service.add_user("u1", {"id": 1})
+            service.add_user("u2", {"id": 2})
+
+            self.assertTrue(service.clear_user("u1"))
+            self.assertFalse(service.clear_user("missing"))
+
+            self.assertEqual(service.get_user("u1"), [])
+            self.assertEqual(service.get_user("u2")[0]["id"], 2)
+
+    def test_clear_user_async(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            service = self._service(tmp, 10)
+            service.add_user("u1", {"id": 1})
+
+            self.assertTrue(asyncio.run(service.clear_user_async("u1")))
+            self.assertEqual(service.get_user("u1"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

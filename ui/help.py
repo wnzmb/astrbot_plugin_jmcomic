@@ -27,7 +27,7 @@ def build_help_text(settings, quota):
     max_batch_hint = f"（每批最多 {max_batch} 个目标）" if max_batch > 0 else ""
 
     return (
-        "📖 漫画站插件 帮助 v0.7.20\n"
+        "📖 漫画站插件 帮助 v0.7.21\n"
         "━━━━━━━━━━━━━━━\n"
         "🔍 搜索：\n"
         "  /jms 关键词 [页码] [排序]   全站搜索\n"
