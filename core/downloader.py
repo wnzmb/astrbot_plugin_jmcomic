@@ -47,8 +47,9 @@ class page_limit:
 
 
 
-# 库内置 advanced_retry 的请求级域名轮询配置：
+# 2.7.11 及以前使用的库内置 advanced_retry 请求级域名轮询配置：
 # 最多轮询 3 轮，单个域名失败 3 次后暂时跳过；按历史失败次数排序，失败多的后置。
+# 2.7.12 起客户端已内置主站/图床域名失败计数与切换，不再注入该插件。
 # 整本下载仍由 download_album_progress 保留 3 次外层任务重试，二者不冲突。
 ADVANCED_RETRY_CONFIG = {
     "retry_rounds": 3,

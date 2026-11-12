@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
@@ -72,6 +73,33 @@ class ConfigTest(unittest.TestCase):
 
         self.assertIs(settings.option, new_option)
         self.assertIsNot(old_option, new_option)
+
+    def test_advanced_retry_is_skipped_on_2_7_12(self):
+        """2.7.12 起客户端内置域名轮询，不再注入 deprecated 插件。"""
+        with mock.patch(
+            "astrbot_plugin_jmcomic.core.config.jmcompat.version_at_least",
+            return_value=True,
+        ):
+            settings = PluginSettings.from_config({}, ROOT)
+            plugins = [
+                item.get("plugin")
+                for item in settings.option.plugins.after_init
+            ]
+
+        self.assertNotIn("advanced_retry", plugins)
+
+    def test_advanced_retry_is_kept_before_2_7_12(self):
+        with mock.patch(
+            "astrbot_plugin_jmcomic.core.config.jmcompat.version_at_least",
+            return_value=False,
+        ):
+            settings = PluginSettings.from_config({}, ROOT)
+            plugins = [
+                item.get("plugin")
+                for item in settings.option.plugins.after_init
+            ]
+
+        self.assertIn("advanced_retry", plugins)
 
     def test_page_limits_are_clamped_to_500(self):
         settings = PluginSettings.from_config(

@@ -1,5 +1,18 @@
 # 更新日志
 
+## v0.7.23 - 2026-11-12
+
+### 🔧 适配 jmcomic 2.7.12
+- 2.7.12 起客户端内置主站/图床域名失败计数与切换，`advanced_retry` 插件变为 deprecated no-op；`_build_option()` 按 `version_at_least("2.7.12")` 停止注入，2.7.11 及以前保持原行为
+- 2.7.12 移除 `JmModuleConfig.DOMAIN_HTML`：`/jmdomain`、`/jmtest` 的 HTML 兜底改用 `getattr`，同时兼容 2.7.11 的 `DOMAIN_HTML` 字符串
+- `core/jmcompat.py` 新增 `version()` / `version_at_least()`，后续可安全做上游版本分支
+- 上游 `docs/jmcomic-CHANGELOG.md` 快照更新到 2.7.12（与上游文件 SHA256 一致）
+
+### 🧪 验证
+- 契约测试新增 2.7.12 断言：`DOMAIN_HTML` 与 `get_html_domain_all_via_github` 已移除
+- 2.7.12 真实环境：API `43164` 详情 172 话、第 1 话限 2 页下载成功；HTML `18comic.ink` 的 `1484418` 限 1 页下载成功
+- 全量 108 项 unittest 通过（jmcomic 2.7.10 / 2.7.12 各跑一遍），`ruff` / `compileall` 通过
+
 ## v0.7.22 - 2026-11-04
 
 ### ✨ 新增

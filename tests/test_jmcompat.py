@@ -88,6 +88,17 @@ class JmCompatTest(unittest.TestCase):
     def test_is_exception_tolerates_plain_error(self):
         self.assertFalse(jmcompat.is_exception(ValueError("x"), "MissingAlbumPhotoException"))
 
+    def test_version_helpers_follow_generation(self):
+        self.assertEqual(jmcompat.version(), "2.7.10-gen1")
+        self.assertTrue(jmcompat.version_at_least("2.7.10"))
+        self.assertFalse(jmcompat.version_at_least("2.7.11"))
+
+        self._swap_generation("2.7.12")
+
+        self.assertEqual(jmcompat.version(), "2.7.12")
+        self.assertTrue(jmcompat.version_at_least("2.7.12"))
+        self.assertFalse(jmcompat.version_at_least("2.7.13"))
+
 
 if __name__ == "__main__":
     unittest.main()

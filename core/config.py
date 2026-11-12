@@ -77,8 +77,8 @@ def _build_option(
     api_domain_list = getattr(module_config, "DOMAIN_API_LIST", []) or []
 
     # 根据用户配置选择客户端类型：
-    #   api  = API客户端（移动端接口），功能全：收藏添加、评论翻页、签到、用户信息，不支持分类筛选
-    #   html = HTML客户端（网页端接口），支持分类筛选，但收藏添加报错、评论不翻页、总数解析不出
+    #   api  = API 客户端（移动端接口），功能全：收藏添加、评论翻页、签到、用户信息
+    #   html = HTML 客户端（网页端接口），收藏/评论/签到受限；插件未提供分类浏览命令
     if client_type == "api":
         # 用户自定义域名优先，随后追加 jmcomic 内置的 API 域名作为兜底
         api_domains = list(custom_domains)
@@ -143,15 +143,16 @@ def _build_option(
             else {}
         )
 
-    # 请求级域名轮询放在 after_init 首位，后续 client 都应用该策略。
-    # 同步客户端（搜索/详情/单章下载等）走 advanced_retry；
-    # 异步整本下载器自带域名轮询，外层仍有整任务 3 次重试。
-    option_dict["plugins"]["after_init"].append({
-        "plugin": "advanced_retry",
-        "kwargs": {
-            "retry_config": dict(ADVANCED_RETRY_CONFIG)
-        }
-    })
+    # 请求级域名轮询：2.7.11 及以前由 advanced_retry 插件提供；
+    # 2.7.12 起客户端已内置“主站 + 图床”的失败计数与域名切换，再注入只会
+    # 触发一条 deprecated 提示，因此按版本跳过。
+    if not jmcompat.version_at_least("2.7.12"):
+        option_dict["plugins"]["after_init"].append({
+            "plugin": "advanced_retry",
+            "kwargs": {
+                "retry_config": dict(ADVANCED_RETRY_CONFIG)
+            }
+        })
 
     if not supports_auth and username and password:
         option_dict["plugins"]["after_init"].append({

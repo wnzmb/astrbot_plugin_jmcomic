@@ -16,6 +16,7 @@ AstrBot 桌面版加载插件依赖时，会把 ``jmcomic`` 从 ``sys.modules`` 
 """
 
 import importlib
+import re
 import sys
 
 
@@ -28,6 +29,30 @@ def module(name="jmcomic"):
         return importlib.import_module(name)
     except Exception:
         return None
+
+
+def version():
+    """当前代 jmcomic 的版本号；缺失时返回 ``"0"``。"""
+    value = attr("__version__", "0")
+    return str(value or "0")
+
+
+def _version_tuple(value):
+    """把 ``2.7.12`` / ``2.7.12rc1`` / ``2.7.10-gen1`` 统一成可比较的元组。"""
+    match = re.match(r"(\d+(?:\.\d+)*)", str(value or "0").strip())
+    if match is None:
+        return (0,)
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def version_at_least(target):
+    """当前代 jmcomic 版本是否 >= ``target``（按数字段比较）。"""
+    current = _version_tuple(version())
+    expected = _version_tuple(target)
+    length = max(len(current), len(expected))
+    current += (0,) * (length - len(current))
+    expected += (0,) * (length - len(expected))
+    return current >= expected
 
 
 def generation():

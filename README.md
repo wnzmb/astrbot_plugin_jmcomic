@@ -10,7 +10,7 @@
 
 <br>
 <div align="center">
-  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.22-E91E63?style=for-the-badge" alt="Version"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/VERSION-v0.7.23-E91E63?style=for-the-badge" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-009688?style=for-the-badge" alt="License"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/PYTHON-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
   <a href="https://github.com/AstrBotDevs/AstrBot"><img src="https://img.shields.io/badge/AstrBot-Compatible-00BFA5?style=for-the-badge&logo=robot&logoColor=white" alt="AstrBot Compatible"></a>
@@ -74,7 +74,7 @@
 
 ### 依赖要求
 
-- **jmcomic >= 2.7.11**（推荐，完整功能；`requirements.txt` 会自动安装/升级）
+- **jmcomic >= 2.7.11**（推荐 2.7.12+，完整功能；`requirements.txt` 会自动安装/升级）
 - **img2pdf >= 0.5.1 / reportlab >= 4.0.0**（PDF 合成优先 img2pdf，失败时 reportlab 逐页写入，最后回退 Pillow；用于降低大文件内存占用）
 - **PySocks >= 1.7.1**（SOCKS5 代理；不配置代理时不影响普通下载）
 - **pypinyin / zhconv / Pillow / PyYAML**（敏感词转拼音、简繁转换、PDF 回退与配置读取，随 `requirements.txt` 安装）
@@ -152,7 +152,7 @@
 
 > **PDF/ZIP 合并规则已分开**：PDF 按 `pdf_page_limit` 页数分册，**整话优先，只有单话超过上限时才按页切分**（例如 500 页按默认 100 页切成 5 册）；显式页段只打包所选页段。ZIP 同时受 `zip_group_size` 话数和 `zip_page_limit` 页数约束，先到哪个就封口，单话超限也会按页切分。命令里的 `-g` 已取消，统一在插件配置页修改，批量或 `-c` 选话同样生效。
 
-> **下载重试**：同步请求使用 jmcomic 的请求级域名轮询，单次请求会按历史失败次数排序域名并自动切换；整本/单章下载失败时还会按 `download_retry_times` 和 `download_retry_interval` 重试，已下载图片会复用缓存，不会从头重下。
+> **下载重试**：2.7.12+ 客户端内置主站/图床域名失败计数与切换；2.7.11 及以前由插件注入 `advanced_retry` 提供请求级域名轮询。整本/单章下载失败时还会按 `download_retry_times` 和 `download_retry_interval` 重试，已下载图片会复用缓存，不会从头重下。
 >
 > **缓存复用**：整本、选话、批量下载都会先查图片缓存；命中时直接复用，不重复下载。为压缩消息数量，不再单独发送缓存命中提示。
 >

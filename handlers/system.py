@@ -9,6 +9,20 @@ from astrbot.api.event import AstrMessageEvent
 from ..core import jmcompat
 
 
+def _html_domain_fallback(module_config):
+    """HTML 域名兜底，兼容 2.7.11 及以前与 2.7.12+。
+
+    2.7.12 移除了 ``JmModuleConfig.DOMAIN_HTML``，只剩 ``DOMAIN_HTML_LIST``；
+    这里用 getattr 读取，缺失时返回空列表而不是抛 AttributeError。
+    """
+    fallback = getattr(module_config, "DOMAIN_HTML_LIST", None)
+    if not fallback:
+        fallback = getattr(module_config, "DOMAIN_HTML", None)
+    if isinstance(fallback, str):
+        return [fallback]
+    return list(fallback) if fallback else []
+
+
 class SystemHandler:
     def __init__(self, settings, access, client, messaging):
         self.settings = settings
@@ -47,8 +61,7 @@ class SystemHandler:
                         or []
                     )
                 else:
-                    fallback = module_config.DOMAIN_HTML_LIST or module_config.DOMAIN_HTML
-                    raw = list(fallback) if not isinstance(fallback, str) else [fallback]
+                    raw = _html_domain_fallback(module_config)
         domains = []
         for item in raw:
             normalized = self._normalize_domain(item)
@@ -189,11 +202,7 @@ class SystemHandler:
                 except Exception:
                     html_domains = []
                 if not html_domains:
-                    fallback = module_config.DOMAIN_HTML_LIST or module_config.DOMAIN_HTML
-                    if isinstance(fallback, str):
-                        html_domains = [fallback]
-                    elif fallback:
-                        html_domains = list(fallback)
+                    html_domains = _html_domain_fallback(module_config)
 
             custom_domains = list(self.settings.custom_domains)
 

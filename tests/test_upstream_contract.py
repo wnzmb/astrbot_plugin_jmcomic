@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT.parent))
 
 import jmcomic  # noqa: E402
 
+from astrbot_plugin_jmcomic.core import jmcompat  # noqa: E402
+
 
 def _params(func):
     return inspect.signature(func).parameters
@@ -99,6 +101,11 @@ class UpstreamContractTest(unittest.TestCase):
             or hasattr(module_config, "DOMAIN_HTML")
         )
         self.assertTrue(hasattr(module_config, "DOMAIN_API_UPDATED_LIST"))
+
+        if jmcompat.version_at_least("2.7.12"):
+            # 2.7.12 移除 DOMAIN_HTML 与旧域名查询方法，插件不能直接访问
+            self.assertFalse(hasattr(module_config, "DOMAIN_HTML"))
+            self.assertFalse(hasattr(module_config, "get_html_domain_all_via_github"))
 
     # ---------- 登录态（v0.7.15 起依赖 2.7.11 的 auth 写回） ----------
     def test_option_auth_login_helper(self):
